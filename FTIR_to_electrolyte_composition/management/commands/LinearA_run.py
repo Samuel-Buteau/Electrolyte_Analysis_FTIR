@@ -14,7 +14,7 @@ import csv
 wanted_wavenumbers = []
 from mpl_toolkits.mplot3d import Axes3D
 
-class LooseBeer(object):
+class LinearAModel(object):
 
     def __init__(self, trainable, num_concentrations, num_samples):
         self.num_concentrations = num_concentrations
@@ -336,7 +336,7 @@ def train_on_all_data(args):
 
 
 
-    model = LooseBeer(trainable=True, num_concentrations=num_concentrations, num_samples=num_samples)
+    model = LinearAModel(trainable=True, num_concentrations=num_concentrations, num_samples=num_samples)
 
     loss, extra = \
         model.optimize(
@@ -502,7 +502,7 @@ def run_on_all_data(args):
     pos_spectra = tf.nn.relu(pristine_spectra)
 
 
-    model = LooseBeer(trainable=False, num_concentrations=num_concentrations, num_samples=num_samples)
+    model = LinearAModel(trainable=False, num_concentrations=num_concentrations, num_samples=num_samples)
 
     res = \
         model.build_forward(
@@ -685,7 +685,7 @@ def cross_validation(args):
     mass_ratios = tf.placeholder(tf.float32, [None, num_concentrations])
     z_supervised = tf.placeholder(tf.float32, [None])
 
-    model = LooseBeer(trainable=True, num_concentrations=num_concentrations, num_samples=num_samples)
+    model = LinearAModel(trainable=True, num_concentrations=num_concentrations, num_samples=num_samples)
 
     loss, extra = \
         model.optimize(
@@ -1317,7 +1317,7 @@ def run_on_directory(args):
     pos_spectra = tf.nn.relu(pristine_spectra)
 
 
-    model = LooseBeer(trainable=False, num_concentrations=num_concentrations, num_samples=num_samples)
+    model = LinearAModel(trainable=False, num_concentrations=num_concentrations, num_samples=num_samples)
 
     res = \
         model.build_forward(
@@ -1436,7 +1436,7 @@ class Command(BaseCommand):
                                                'run_on_all_data',
                                                'paper_figures'
                                                ])
-        parser.add_argument('--logdir', required=True)
+        parser.add_argument('--logdir')
         parser.add_argument('--cross_validation_dir')
         parser.add_argument('--batch_size', type=int, default=32)
         parser.add_argument('--virtual_batches', type=int, default=2)
