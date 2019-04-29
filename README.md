@@ -61,3 +61,8 @@ will produce the figures from the paper for the cross validation runs stored in 
 
 # Requirements
 see requirements.txt
+
+
+# Understanding the database
+An in-depth guide to the dataset and how to access it in python is written at the begining of the file
+FTIR_to_electrolyte_composition/models.py 

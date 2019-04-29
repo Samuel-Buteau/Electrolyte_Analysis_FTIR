@@ -1619,7 +1619,6 @@ class Command(BaseCommand):
         parser.add_argument('--batch_size', type=int, default=32)
         parser.add_argument('--virtual_batches', type=int, default=2)
         parser.add_argument('--learning_rate', type=float, default=5e-3)
-        parser.add_argument('--visuals', type=bool, default=False)
         parser.add_argument('--prob_supervised', type=float, default=0.9)
         parser.add_argument('--total_steps', type=int, default=20000)
         parser.add_argument('--checkpoint_every', type=int, default=2000)
@@ -1642,6 +1641,10 @@ class Command(BaseCommand):
         parser.add_argument('--output_dir', default='OutputData')
         parser.add_argument('--num_concentrations', type=int, default=5)
         parser.add_argument('--num_samples', type=int, default=1536)
+
+        parser.add_argument('--visuals', dest='visuals', action='store_true')
+        parser.add_argument('--no-visuals', dest='visuals', action='store_false')
+        parser.set_defaults(visuals=False)
 
     def handle(self, *args, **options):
 

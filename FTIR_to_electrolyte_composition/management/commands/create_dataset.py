@@ -182,7 +182,7 @@ def from_metadata_to_mass_ratios(meta):
             'DEC': mass_of_dec_per_total
             }
 
-update_eli = False
+update_eli = True
 update_robot = True
 class Command(BaseCommand):
     def handle(self, *args, **kwargs):
@@ -217,14 +217,16 @@ class Command(BaseCommand):
                 print('data: ', dat)
                 #plt.plot(range(len(dat)), dat)
                 #plt.show()
+                samps = []
                 for index in range(len(dat)):
-                    samp = FTIRSample(
+                    samps.append(FTIRSample(
                         spectrum=spec,
                         index=index,
                         wavenumber=wanted_wavenumbers[index],
                         absorbance=dat[index]
-                    )
-                    samp.save()
+                    ))
+
+                FTIRSample.objects.bulk_create(samps)
 
         if update_robot:
             #for spec in FTIRSpectrum.objects.filter(preparation=ROBOT):
@@ -253,15 +255,16 @@ class Command(BaseCommand):
                 print('data: ', dat)
                 # plt.plot(range(len(dat)), dat)
                 # plt.show()
+                samps = []
                 for index in range(len(dat)):
-                    samp = FTIRSample(
+                    samps.append(FTIRSample(
                         spectrum=spec,
                         index=index,
                         wavenumber=wanted_wavenumbers[index],
                         absorbance=dat[index]
-                    )
-                    samp.save()
+                    ))
 
+                FTIRSample.objects.bulk_create(samps)
 
 
 
