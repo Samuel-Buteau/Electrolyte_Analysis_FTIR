@@ -187,8 +187,7 @@ update_robot = True
 class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         if update_eli:
-            #for spec in FTIRSpectrum.objects.filter(preparation=HUMAN):
-            #    spec.delete()
+
 
             for filename in  elizabeth_meta.keys():
                 meta = elizabeth_meta[filename]
@@ -215,8 +214,7 @@ class Command(BaseCommand):
 
                 print('ratio:,',ratios)
                 print('data: ', dat)
-                #plt.plot(range(len(dat)), dat)
-                #plt.show()
+
                 samps = []
                 for index in range(len(dat)):
                     samps.append(FTIRSample(
@@ -229,8 +227,7 @@ class Command(BaseCommand):
                 FTIRSample.objects.bulk_create(samps)
 
         if update_robot:
-            #for spec in FTIRSpectrum.objects.filter(preparation=ROBOT):
-            #    spec.delete()
+
 
             all_filenames = []
             path_to_robot = os.path.join('.','Data', 'Robot')

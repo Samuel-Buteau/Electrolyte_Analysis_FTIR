@@ -66,3 +66,8 @@ see requirements.txt
 # Understanding the database
 An in-depth guide to the dataset and how to access it in python is written at the begining of the file
 FTIR_to_electrolyte_composition/models.py 
+
+# Understanding the model that maps FTIR spectra to the mass ratios of various components
+This README contains valuable information about how to call the program to accomplish various operations (train, run on a directory, do cross-validation, etc..)
+For more in-depth documentation of how the model is implemented, see
+FTIR_to_electrolyte_composition/management/commands/LinearA_run.py
