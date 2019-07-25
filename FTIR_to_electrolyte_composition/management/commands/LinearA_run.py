@@ -184,7 +184,7 @@ class LinearAModel(object):
                                                      F_relu
                                                      )
 
-        return {'F': F, 'reconstructed_spectra': reconstructed_spectra,
+        return {'F': F, 'F_relu': F_relu,'reconstructed_spectra': reconstructed_spectra,
                 'predicted_mass_ratios': predicted_mass_ratios,
                 'reconstructed_spectra_components': reconstructed_spectra_components}
 
@@ -239,7 +239,7 @@ class LinearAModel(object):
                               tf.square(tf.reduce_mean(tf.square(self.X_0)) - 1.))
 
         # We try to make x small while keeping the output big. This should force x to focus on large signals in S.
-        small_x_loss = (tf.reduce_mean(tf.exp(self.x) / (1e-8 + tf.reduce_sum(res['F'], axis=1)))
+        small_x_loss = (tf.reduce_mean(tf.exp(self.x) / (1e-8 + tf.reduce_sum(res['F_relu'], axis=1)))
                         )
 
         small_linear_loss = tf.losses.mean_squared_error(

@@ -61,6 +61,8 @@ will produce the figures from the paper for the cross validation runs stored in 
 
 # Requirements
 see requirements.txt
+install the requirements by running on the command line "pip install <something>" with <something substituted for a requirement.
+
 
 
 # Understanding the database
