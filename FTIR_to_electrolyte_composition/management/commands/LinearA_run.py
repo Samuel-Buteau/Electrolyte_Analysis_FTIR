@@ -15,8 +15,17 @@ from FTIR_to_electrolyte_composition.models import FTIRSpectrum, FTIRSample
 
 wanted_wavenumbers = []
 
+def my_mean_squared_error(x,y, weights=None):
+    if not weights is None:
+        return (
+                tf.reduce_mean(weights * tf.square(x - y)) / (1e-10 + tf.reduce_mean(weights))
+                )
+    else:
+        return tf.reduce_mean(tf.square(x - y))
 
-class LinearAModel(object):
+
+
+class LinearAModel(tf.keras.Model):
     """
     This defines the model used to convert FTIR spectra
     into predictions of the weight ratios, but it also defines
@@ -36,19 +45,19 @@ class LinearAModel(object):
     Note that there is a more general way of doing this, which would be interesting to explore given multiple
     experimental apparatus, and could be implemented relatively simply here.
 
-    Take a look at the model parameters A_1 and X_0. Each is a matrix or tensor with an index corresponding to
+    Take a look at the model parameters A and X. Each is a matrix or tensor with an index corresponding to
     wavenumber.
-    For instance, X_0[c,w_i] corresponds to molecule type c and wavenumber index w_i.
+    For instance, X[c,w_i] corresponds to molecule type c and wavenumber index w_i.
 
     Instead of doing this, we could reparameterize X as a neural network taking as input an actual wavenumber w
     and returns a vector indexed by molecule type c. In other words, X(w)[c] would be like a matrix element,
     but now the dependence on wavenumber is explicit and continuous.
     Then, when applying the model to a vector of absorbance S corresponding to known wavenumbers W,
-    we can first create X_0 by evaluating X at the known wavenumbers W, then proceeding as before.
+    we can first create X by evaluating X at the known wavenumbers W, then proceeding as before.
     Also note that in the case where we allow the number of samples to vary,
     then we would need to renormalize by that number.
 
-    Similarly, A_1[c,w_i,d] corresponds to molecule types c, d and wavenumber index w_i,
+    Similarly, A[c,w_i,d] corresponds to molecule types c, d and wavenumber index w_i,
     so we could reparameterize with a function A of wavenumber which returns
      a matrix depending on pairs of molecule types.
     Formally, A(w)[c,d] would correspond to a matrix (tensor) element.
@@ -63,7 +72,7 @@ class LinearAModel(object):
 
     """
 
-    def __init__(self, trainable, num_concentrations, num_samples):
+    def __init__(self, num_concentrations, num_samples,trainable=True):
         """
         This defines the parameters of the model.
         :param trainable:
@@ -79,33 +88,23 @@ class LinearAModel(object):
         an integer specifying the number of wavenumbers at which the FTIR spectrum was measured.
         In our case, we use the first 1536 wavenumbers measured.
         """
+        super(LinearAModel, self).__init__()
         self.num_concentrations = num_concentrations
         self.num_samples = num_samples
         self.trainable = trainable
-        # dropout is a standard technique in machine learning.
-        # It is intended to regularize the model.
-        self.dropout = tf.placeholder(dtype=tf.float32)
-
-        # Placeholders are variables and their value must be specified when evaluating the optimizer.
-        self.prediction_coeff = tf.placeholder(dtype=tf.float32)
-        self.positivity_coeff = tf.placeholder(dtype=tf.float32)
-        self.normalization_coeff = tf.placeholder(dtype=tf.float32)
-        self.small_x_coeff = tf.placeholder(dtype=tf.float32)
-        self.small_linear_coeff = tf.placeholder(dtype=tf.float32)
-        self.small_dA_coeff = tf.placeholder(dtype=tf.float32)
 
         # the log-magnitude of X
-        self.x = tf.get_variable(
+        self.x = self.add_variable(
             name='x',
             shape=[1],
             dtype=tf.float32,
-            initializer=tf.initializers.constant(value=[1], dtype=tf.float32),
+            initializer=tf.initializers.constant(value=[1]),
             trainable=trainable,
         )
 
         # This goes from spectrum to concentrations
-        self.X_0 = tf.get_variable(
-            name='X_0',
+        self.X = self.add_variable(
+            name='X',
             shape=[num_concentrations, num_samples],
             dtype=tf.float32,
             initializer=tf.initializers.orthogonal(),
@@ -113,19 +112,16 @@ class LinearAModel(object):
         )
 
         # This goes from concentrations to spectrum
-        self.A_1 = tf.get_variable(
-            name='A_1',
+        self.A = self.add_variable(
+            name='A',
             shape=[num_concentrations, num_samples, num_concentrations],
             dtype=tf.float32,
             initializer=tf.initializers.orthogonal(),
             trainable=trainable,
         )
 
-        # dropout is a standard technique in machine learning.
-        # It is intended to regularize the model.
-        self.drop = tf.layers.Dropout(name='dropout_layer', rate=self.dropout)
 
-    def build_forward(self, input_spectra):
+    def call(self, input_spectra, training=False):
         """
         This creates the model to compute the weight ratios starting from input spectra.
 
@@ -139,15 +135,14 @@ class LinearAModel(object):
         # numerical small number to avoid singularities when dividing.
         epsilon = 1e-10
 
-        # apply dropout to input
-        dropped_input_spectra = self.drop(input_spectra)
+        input_spectra = tf.nn.relu(input_spectra)
 
         # tf.einsum stands for einstein sum.
         # we give the indecies of the first matrix (c,s) and the second matrix (b,s)
         # and the desired resulting matrix (b,c)
         # here, c is a molecule type index, s is a wavenumber index, b is a batch index
         # (this identifies which spectrum among the many spectra in input_spectra)
-        F = tf.exp(self.x) * tf.einsum('cs,bs->bc', self.X_0, dropped_input_spectra)
+        F = tf.exp(self.x) * tf.einsum('cs,bs->bc', self.X, input_spectra)
 
         # tf.nn.relu simply replaces negative values by 0.
         # here F_relu are the concentrations without negative values.
@@ -157,7 +152,7 @@ class LinearAModel(object):
         predicted_mass_ratios = F_relu / (epsilon + tf.reduce_sum(F_relu, axis=1, keepdims=True))
 
         # here we have two einsums.
-        # First we convert A_1 to a two dimentional matrix
+        # First we convert A to a two dimentional matrix
         # (but each batch index gets a different matrix)
         # the indecies are:
         # - a concentration index d,
@@ -168,7 +163,7 @@ class LinearAModel(object):
         # Then, the second einsum applies the matrix to the predicted concentrations to reconstruct spectra.
         reconstructed_spectra = tf.einsum('bsc,bc->bs',
                                           tf.einsum('dsc,bd->bsc',
-                                                    tf.exp(self.A_1),
+                                                    tf.exp(self.A),
                                                     predicted_mass_ratios
                                                     ),
                                           F_relu
@@ -178,7 +173,7 @@ class LinearAModel(object):
         # we take each component separately.
         reconstructed_spectra_components = tf.einsum('bsc,bc->bsc',
                                                      tf.einsum('dsc,bd->bsc',
-                                                               tf.exp(self.A_1),
+                                                               tf.exp(self.A),
                                                                predicted_mass_ratios
                                                                ),
                                                      F_relu
@@ -188,9 +183,7 @@ class LinearAModel(object):
                 'predicted_mass_ratios': predicted_mass_ratios,
                 'reconstructed_spectra_components': reconstructed_spectra_components}
 
-    def optimize(self, input_spectra, input_mass_ratios, input_z_supervised,
-                 learning_rate, global_norm_clip,
-                 logdir):
+    def get_losses(self, input_spectra, input_mass_ratios, input_z_supervised):
 
         """
         This creates the optimizer used to tune the parameters of the model.
@@ -223,187 +216,185 @@ class LinearAModel(object):
         """
 
         # first, build the model itself.
-        res = self.build_forward(input_spectra)
+        res = self.call(input_spectra)
 
         # then, make the various parts of the loss function.
-        reconstruction_loss = tf.losses.mean_squared_error(labels=input_spectra,
-                                                           predictions=res['reconstructed_spectra'])
+        reconstruction_loss = my_mean_squared_error(x=input_spectra,
+                                                           y=res['reconstructed_spectra'])
 
-        prediction_loss = tf.losses.mean_squared_error(labels=input_mass_ratios,
-                                                       predictions=res['predicted_mass_ratios'],
+        prediction_loss = my_mean_squared_error(x=input_mass_ratios,
+                                                       y=res['predicted_mass_ratios'],
                                                        weights=tf.expand_dims(input_z_supervised, axis=1))
 
         positivity_loss = tf.reduce_mean(tf.nn.relu(-res['F']))
 
-        normalization_loss = (tf.square(tf.reduce_mean(tf.exp(2. * self.A_1)) - 1.) +
-                              tf.square(tf.reduce_mean(tf.square(self.X_0)) - 1.))
+        normalization_loss = (tf.square(tf.reduce_mean(tf.exp(2. * self.A)) - 1.) +
+                              tf.square(tf.reduce_mean(tf.square(self.X)) - 1.))
 
         # We try to make x small while keeping the output big. This should force x to focus on large signals in S.
         small_x_loss = (tf.reduce_mean(tf.exp(self.x) / (1e-8 + tf.reduce_sum(res['F_relu'], axis=1)))
                         )
 
-        small_linear_loss = tf.losses.mean_squared_error(
-            labels=tf.tile(tf.reduce_mean(tf.exp(self.A_1), axis=0, keepdims=True), [self.num_concentrations, 1, 1]),
-            predictions=tf.exp(self.A_1))
+        small_linear_loss = my_mean_squared_error(
+            x=tf.tile(tf.reduce_mean(tf.exp(self.A), axis=0, keepdims=True), [self.num_concentrations, 1, 1]),
+            y=tf.exp(self.A))
 
-        small_dA_loss = tf.losses.mean_squared_error(labels=tf.exp(self.A_1[:, 1:, :]),
-                                                     predictions=tf.exp(self.A_1[:, :-1, :]))
+        small_dA_loss = my_mean_squared_error(x=tf.exp(self.A[:, 1:, :]),
+                                                     y=tf.exp(self.A[:, :-1, :]))
 
-        # then, combine the various loss components according to their coefficients.
-        loss = (reconstruction_loss +
-                self.prediction_coeff * prediction_loss +
-                self.positivity_coeff * positivity_loss +
-                self.normalization_coeff * normalization_loss +
-                self.small_x_coeff * small_x_loss +
-                self.small_linear_coeff * small_linear_loss +
-                self.small_dA_coeff * small_dA_loss
 
+        return {
+            'reconstruction_loss':reconstruction_loss,
+            'prediction_loss':prediction_loss,
+            'positivity_loss':positivity_loss,
+            'normalization_loss':normalization_loss,
+            'small_x_loss':small_x_loss,
+            'small_linear_loss':small_linear_loss,
+            'small_dA_loss':small_dA_loss
+        }
+
+
+
+class Trainer():
+    def __init__(self, num_concentrations, num_samples, args, trainable=True, checkpointing=True):
+        self.num_concentrations= num_concentrations
+        self.num_samples = num_samples
+        self.args = args
+        self.model = LinearAModel(
+            trainable=trainable,
+            num_concentrations=self.num_concentrations,
+            num_samples=self.num_samples
+        )
+        if trainable:
+            self.optimizer = tf.keras.optimizers.Adam(args['learning_rate'])
+            if checkpointing:
+                self.ckpt = tf.train.Checkpoint(step=tf.Variable(1), optimizer=self.optimizer, net=self.model)
+                self.summary_writer = tf.summary.create_file_writer(os.path.join(args['logdir'], 'summaries'))
+
+        else:
+            if checkpointing:
+                self.ckpt = tf.train.Checkpoint(net=self.model)
+        if checkpointing:
+            self.manager = tf.train.CheckpointManager(self.ckpt, args['logdir'], max_to_keep=3)
+            self.ckpt.restore(self.manager.latest_checkpoint)
+            if self.manager.latest_checkpoint:
+                print("Restored from {}".format(self.manager.latest_checkpoint))
+            else:
+                print("Initializing from scratch.")
+
+        self.checkpointing = checkpointing
+
+    @tf.function
+    def train_step(self, s, m, z, batch_size):
+        pos_spectra = tf.nn.relu(tf.expand_dims(s, axis=2))
+        average_absorbance = tf.reduce_mean(pos_spectra, axis=[0, 1, 2])
+
+        noised_spectra = tf.nn.relu(
+            pos_spectra +
+            tf.random.normal(
+                shape=[batch_size, self.num_samples, 1],
+                mean=0.,
+                stddev=average_absorbance * self.args['noise_level'],
+            dtype=tf.float32))
+
+        num_filter_d = tf.random.uniform(shape=[1], minval=2, maxval=5, dtype=tf.int32)[0]
+        temperature = 1e-8 + tf.exp(
+            tf.random.uniform(shape=[1], minval=-2., maxval=self.args['largest_temp_exp'], dtype=tf.float32))
+        filter1 = tf.reshape(tf.nn.softmax(
+            -tf.abs(tf.cast(tf.range(
+                start=-num_filter_d,
+                limit=num_filter_d + 1,
+                dtype=tf.int32), tf.float32)) / temperature),
+            [2 * num_filter_d + 1, 1, 1])
+
+        # This is a modified version of the spectrum which incorporates noise and smoothing.
+        augmented_spectra = tf.nn.conv1d(noised_spectra, filter1, stride=1, padding="SAME")[:, :, 0]
+
+        with tf.GradientTape() as tape:
+            losses = \
+                self.model.get_losses(
+                    input_spectra=augmented_spectra,
+                    input_mass_ratios=m,
+                    input_z_supervised=z,
                 )
 
-        if self.trainable:
-            # First, record values for debug purposes.
-            with tf.name_scope('summaries'):
-                tf.summary.scalar('loss', loss)
-                tf.summary.scalar('sqrt prediction_loss', tf.sqrt(prediction_loss))
-                tf.summary.scalar('positivity_loss', positivity_loss)
-                tf.summary.scalar('normalization_loss', normalization_loss)
-                tf.summary.scalar('small x loss', small_x_loss)
-                tf.summary.scalar('small dA loss', small_dA_loss)
-                tf.summary.scalar('sqrt reconstruction_loss', tf.sqrt(reconstruction_loss))
+            loss = (
+                    losses['reconstruction_loss'] +
+                    self.args['prediction_coeff'] * losses['prediction_loss'] +
+                    self.args['positivity_coeff'] * losses['positivity_loss'] +
+                    self.args['normalization_coeff'] * losses['normalization_loss'] +
+                    self.args['small_x_coeff'] * losses['small_x_loss'] +
+                    self.args['small_linear_coeff'] * losses['small_linear_loss'] +
+                    self.args['small_dA_coeff'] * losses['small_dA_loss']
+            )
 
-            self.merger = tf.summary.merge_all()
-            self.train_writer = tf.summary.FileWriter(os.path.join(logdir, 'train'))
-            self.test_writer = tf.summary.FileWriter(os.path.join(logdir, 'test'))
+        gradients = tape.gradient(loss, self.model.trainable_variables)
 
-            """
-            we clip the gradient by global norm, currently the default is 10.
-            -- Samuel B., 2018-09-14
-            """
+        gradients_no_nans = [tf.where(tf.math.is_nan(x), tf.zeros_like(x), x) for x in gradients]
+        gradients_norm_clipped, _ = tf.clip_by_global_norm(gradients_no_nans, self.args['global_norm_clip'])
+        self.optimizer.apply_gradients(zip(gradients_norm_clipped, self.model.trainable_variables))
+        if self.checkpointing:
+            with self.summary_writer.as_default():
+                tf.summary.scalar('loss', loss, step=self.optimizer.iterations)
+                tf.summary.scalar('sqrt prediction_loss', tf.sqrt(losses['prediction_loss']), step=self.optimizer.iterations)
+                tf.summary.scalar('positivity_loss', losses['positivity_loss'], step=self.optimizer.iterations)
+                tf.summary.scalar('normalization_loss', losses['normalization_loss'], step=self.optimizer.iterations)
+                tf.summary.scalar('small x loss', losses['small_x_loss'], step=self.optimizer.iterations)
+                tf.summary.scalar('small dA loss', losses['small_dA_loss'], step=self.optimizer.iterations)
+                tf.summary.scalar('sqrt reconstruction_loss', tf.sqrt(losses['reconstruction_loss']),
+                                  step=self.optimizer.iterations)
 
-            # Then, we build an Adam Optimizer and configure it to minimize the loss function
-            # it is a bit complicated because we must ignore gradients that have numerical errors in them (NaN)
-            # and because we must be able to accumulate changes on a static model
-            # and then apply the updates all at once.
-            # This is because sometimes the number of spectra in a batch sufficient for stability might be too
-            # large for the hardware on which it is run.
-            # this is what we call 'virtual batches'.
-
-            optimizer = tf.train.AdamOptimizer(learning_rate)
-            tvs = tf.trainable_variables()
-            accum_vars = [tf.Variable(tf.zeros_like(tv.initialized_value()), trainable=False) for tv in tvs]
-            zero_ops = [tv.assign(tf.zeros_like(tv)) for tv in accum_vars]
-            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-            with tf.control_dependencies(update_ops):
-                gvs = optimizer.compute_gradients(loss, tvs)
-
-            test_ops = tf.reduce_any(
-                tf.concat([[tf.reduce_any(tf.is_nan(gv[0]), keepdims=False)] for i, gv in enumerate(gvs)], axis=0))
-
-            accum_ops = tf.cond(test_ops,
-                                false_fn=lambda: [accum_vars[i].assign_add(gv[0]) for i, gv in enumerate(gvs)],
-                                true_fn=lambda: [accum_vars[i].assign_add(tf.zeros_like(gv[0])) for i, gv in
-                                                 enumerate(gvs)])
-            with tf.control_dependencies(accum_ops):
-                gradients, _ = tf.clip_by_global_norm(accum_vars, global_norm_clip)
-            train_step = optimizer.apply_gradients([(gradients[i], gv[1]) for i, gv in enumerate(gvs)])
-
-            return loss, {'zero_ops': zero_ops, 'accum_ops': accum_ops,
-                          'train_step': train_step, 'test_ops': test_ops,
-                          'reconstructed_spectra': res['reconstructed_spectra'],
-                          'predicted_mass_ratios': res['predicted_mass_ratios'],
-                          'input_spectra': input_spectra,
-                          'input_mass_ratios': input_mass_ratios
-                          }
-
-        else:
-            return loss, {}
+        return loss
 
 
-@contextlib.contextmanager
-def initialize_session(logdir, seed=None):
-    """Create a session and saver initialized from a checkpoint if found."""
-    if not seed == 0:
-        numpy.random.seed(seed=seed)
+def get_data():
+    # Create supervised dataset
+    supervised_s = []
+    supervised_m = []
+    supervised_z = []
+    supervised_f = []
 
-    config = tf.ConfigProto(
+    num_supervised = 0
+    ec_ratios = []
+    LIPF6_ratios = []
+    for spec in FTIRSpectrum.objects.filter(supervised=True):
+        supervised_f.append(spec.filename)
+        supervised_z.append(1.)
+        supervised_m.append([spec.LIPF6_mass_ratio, spec.EC_mass_ratio, spec.EMC_mass_ratio,
+                             spec.DMC_mass_ratio, spec.DEC_mass_ratio])
+        ec_ratios.append(
+            spec.EC_mass_ratio / (spec.EC_mass_ratio + spec.EMC_mass_ratio + spec.DMC_mass_ratio + spec.DEC_mass_ratio))
+        LIPF6_ratios.append(spec.LIPF6_mass_ratio / (
+                spec.EC_mass_ratio + spec.EMC_mass_ratio + spec.DMC_mass_ratio + spec.DEC_mass_ratio))
 
-    )
-    # config.gpu_options.allow_growth = True
-    logdir = os.path.expanduser(logdir)
-    checkpoint = tf.train.latest_checkpoint(logdir)
-    saver = tf.train.Saver()
-    with tf.Session(config=config) as sess:
-        if checkpoint:
-            print('Load checkpoint {}.'.format(checkpoint))
-            saver.restore(sess, checkpoint)
-        else:
-            print('Initialize new model.')
-            os.makedirs(logdir, exist_ok=True)
-            sess.run(tf.global_variables_initializer())
-        yield sess, saver
+        supervised_s.append(
+            [samp.absorbance for samp in FTIRSample.objects.filter(spectrum=spec).order_by('index')])
 
+        num_supervised += 1
 
+    supervised_s = numpy.array(supervised_s, dtype=numpy.float32)
+    supervised_m = numpy.array(supervised_m, dtype=numpy.float32)
+    supervised_z = numpy.array(supervised_z, dtype=numpy.float32)
 
+    unsupervised_s = []
+    unsupervised_m = []
+    unsupervised_z = []
+    num_unsupervised = 0
+    for spec in FTIRSpectrum.objects.filter(supervised=False):
+        unsupervised_z.append(0.)
+        unsupervised_m.append(5 * [0.])
+        unsupervised_s.append(
+            [samp.absorbance for samp in FTIRSample.objects.filter(spectrum=spec).order_by('index')])
+        num_unsupervised += 1
 
-class GetFresh:
-    """
-    This is necessary because we feed the training set ourselves to the optimizer
-    so we want to cycle through the whole dataset, always in a random order,
-    without unnecessary repetition.
+    unsupervised_s = numpy.array(unsupervised_s, dtype=numpy.float32)
+    unsupervised_m = numpy.array(unsupervised_m, dtype=numpy.float32)
+    unsupervised_z = numpy.array(unsupervised_z, dtype=numpy.float32)
 
-    Get fresh numbers, either
-        - from 0 to n_samples-1 or
-        - from list_of_indecies
-    in a random order without repetition
-    However, once we have exausted all the numbers, we reset.
-    - Samuel Buteau, October 2018
-    """
-
-    def __init__(self, n_samples=None, list_of_indecies=None):
-        if not n_samples is None:
-            self.GetFresh_list = numpy.arange(n_samples, dtype=numpy.int32)
-            self.get_fresh_count = n_samples
-        elif not list_of_indecies is None:
-            self.GetFresh_list = numpy.array(copy.deepcopy(list_of_indecies))
-            self.get_fresh_count = len(self.GetFresh_list)
-        else:
-            raise Exception('Invalid Input')
-
-        numpy.random.shuffle(self.GetFresh_list)
-        self.get_fresh_pos = 0
-
-    def get(self, n):
-        """
-        will return a list of n random numbers in self.GetFresh_list
-        - Samuel Buteau, October 2018
-        """
-        if n >= self.get_fresh_count:
-            return numpy.concatenate((self.get(int(n / 2)), self.get(n - int(n / 2))))
-
-        reshuffle_flag = False
-
-        n_immediate_fulfill = min(n, self.get_fresh_count - self.get_fresh_pos)
-        batch_of_indecies = numpy.empty([n], dtype=numpy.int32)
-        for i in range(0, n_immediate_fulfill):
-            batch_of_indecies[i] = self.GetFresh_list[i + self.get_fresh_pos]
-
-        self.get_fresh_pos += n_immediate_fulfill
-        if self.get_fresh_pos >= self.get_fresh_count:
-            self.get_fresh_pos -= self.get_fresh_count
-            reshuffle_flag = True
-
-            # Now, the orders that needed to be satisfied are satisfied.
-        n_delayed_fulfill = max(0, n - n_immediate_fulfill)
-        if reshuffle_flag:
-            numpy.random.shuffle(self.GetFresh_list)
-
-        if n_delayed_fulfill > 0:
-            for i in range(0, n_delayed_fulfill):
-                batch_of_indecies[i + n_immediate_fulfill] = self.GetFresh_list[i]
-            self.get_fresh_pos = n_delayed_fulfill
-
-        return batch_of_indecies
-
+    return {
+        'supervised':{'f':supervised_f, 's':supervised_s, 'm':supervised_m, 'z':supervised_z},
+        'unsupervised':{'s':unsupervised_s, 'm':unsupervised_m, 'z':unsupervised_z}
+    }
 
 def train_on_all_data(args):
 
@@ -415,214 +406,49 @@ def train_on_all_data(args):
     num_concentrations = args['num_concentrations']
     num_samples = args['num_samples']
 
+    res = get_data()
 
-    # Create supervised dataset
-    supervised_dataset = {'s': [], 'm': [], 'z': []}
-    num_supervised = 0
-    ec_ratios = []
-    LIPF6_ratios = []
-    for spec in FTIRSpectrum.objects.filter(supervised=True):
-        supervised_dataset['z'].append(1.)
-        supervised_dataset['m'].append([spec.LIPF6_mass_ratio, spec.EC_mass_ratio, spec.EMC_mass_ratio,
-                                        spec.DMC_mass_ratio, spec.DEC_mass_ratio])
-        ec_ratios.append(
-            spec.EC_mass_ratio / (spec.EC_mass_ratio + spec.EMC_mass_ratio + spec.DMC_mass_ratio + spec.DEC_mass_ratio))
-        LIPF6_ratios.append(spec.LIPF6_mass_ratio / (
-                    spec.EC_mass_ratio + spec.EMC_mass_ratio + spec.DMC_mass_ratio + spec.DEC_mass_ratio))
+    supervised_dataset = tf.data.Dataset.from_tensor_slices((
+        tf.cast(res['supervised']['s'], dtype=tf.float32),
+        tf.cast(res['supervised']['m'], dtype=tf.float32),
+        tf.cast(res['supervised']['z'], dtype=tf.float32)))
 
-        supervised_dataset['s'].append(
-            [samp.absorbance for samp in FTIRSample.objects.filter(spectrum=spec).order_by('index')])
-
-        num_supervised += 1
-
-    supervised_dataset['s'] = numpy.array(supervised_dataset['s'])
-    supervised_dataset['m'] = numpy.array(supervised_dataset['m'])
-    supervised_dataset['z'] = numpy.array(supervised_dataset['z'])
-
-    unsupervised_dataset = {'s': [], 'm': [], 'z': []}
-    num_unsupervised = 0
-    for spec in FTIRSpectrum.objects.filter(supervised=False):
-        unsupervised_dataset['z'].append(0.)
-        unsupervised_dataset['m'].append(5 * [0.])
-        unsupervised_dataset['s'].append(
-            [samp.absorbance for samp in FTIRSample.objects.filter(spectrum=spec).order_by('index')])
-        num_unsupervised += 1
-
-    unsupervised_dataset['s'] = numpy.array(unsupervised_dataset['s'])
-    unsupervised_dataset['m'] = numpy.array(unsupervised_dataset['m'])
-    unsupervised_dataset['z'] = numpy.array(unsupervised_dataset['z'])
-
-    '''
-    # Uncomment to write the dataset in a pickle file
-    with open(os.path.join('.', args['datasets_file']), 'wb') as f:
-        pickle.dump({'supervised_dataset': supervised_dataset,
-                     'unsupervised_dataset': unsupervised_dataset,
-                     'num_supervised': num_supervised,
-                     'num_unsupervised': num_unsupervised,
-                     }, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    '''
-    supervised_fresh = GetFresh(n_samples=num_supervised)
-    unsupervised_fresh = GetFresh(n_samples=num_unsupervised)
-
-    if not args['seed'] == 0:
-        random.seed(a=args['seed'])
-
-    batch_size = tf.placeholder(dtype=tf.int32)
-    learning_rate = tf.placeholder(dtype=tf.float32)
+    unsupervised_dataset = tf.data.Dataset.from_tensor_slices((
+        tf.cast(res['unsupervised']['s'], dtype=tf.float32),
+        tf.cast(res['unsupervised']['m'], dtype=tf.float32),
+        tf.cast(res['unsupervised']['z'], dtype=tf.float32)))
 
 
-    # this is where we input the spectra
-    pristine_spectra = tf.placeholder(tf.float32, [None, num_samples])
-
-    pos_spectra = tf.nn.relu(tf.expand_dims(pristine_spectra, axis=2))
-    average_absorbance = tf.reduce_mean(pos_spectra, axis=[0, 1, 2])
-
-    noised_spectra = tf.nn.relu(
-        pos_spectra +
-        tf.random.normal(
-            shape=[batch_size, num_samples, 1],
-            mean=0.,
-            stddev=average_absorbance * args['noise_level']))
-
-    num_filter_d = tf.random.uniform(shape=[1], minval=2, maxval=5, dtype=tf.int32)[0]
-    temperature = 1e-8 + tf.exp(
-        tf.random.uniform(shape=[1], minval=-2., maxval=args['largest_temp_exp'], dtype=tf.float32))
-    filter1 = tf.reshape(tf.nn.softmax(
-        -tf.abs(tf.to_float(tf.range(
-            start=-num_filter_d,
-            limit=num_filter_d + 1,
-            dtype=tf.int32))) / temperature),
-        [2 * num_filter_d + 1, 1, 1])
-
-    # This is a modified version of the spectrum which incorporates noise and smoothing.
-    augmented_spectra = tf.nn.conv1d(noised_spectra, filter1, stride=1, padding="SAME")[:, :, 0]
-
-    mass_ratios = tf.placeholder(tf.float32, [None, num_concentrations])
-    z_supervised = tf.placeholder(tf.float32, [None])
-
-
+    dataset = tf.data.experimental.sample_from_datasets(
+        datasets=(
+            supervised_dataset.shuffle(10000).repeat(),
+            unsupervised_dataset.shuffle(10000).repeat(),
+        ),
+        weights=[args['prob_supervised'], 1.-args['prob_supervised']]
+    )
+    dataset = dataset.batch(args['batch_size'])
     # this is where we define the model and optimizer.
-    model = LinearAModel(trainable=True, num_concentrations=num_concentrations, num_samples=num_samples)
 
-    loss, extra = \
-        model.optimize(
-            input_spectra=augmented_spectra,
-            input_mass_ratios=mass_ratios,
-            input_z_supervised=z_supervised,
-            learning_rate=learning_rate,
-            global_norm_clip=args['global_norm_clip'],
-            logdir=args['logdir']
-        )
+    trainer = Trainer(num_concentrations, num_samples, args, trainable=True)
 
-    step = tf.train.get_or_create_global_step()
-    increment_step = step.assign_add(1)
+    for s, m, z in dataset:
+        current_step = int(trainer.ckpt.step)
 
-    #either start from a preexisting training point or from scratch.
-    with initialize_session(args['logdir'], seed=args['seed']) as (sess, saver):
+        # stop condition.
+        if current_step >= args['total_steps']:
+            print('Training complete.')
+            break
 
-        # infinite loop.
-        while True:
-            current_step = sess.run(step)
+        loss = trainer.train_step(s,m,z, args['batch_size'])
 
-            # stop condition.
-            if current_step >= args['total_steps']:
-                print('Training complete.')
-                break
+        trainer.ckpt.step.assign_add(1)
+        current_step = int(trainer.ckpt.step)
+        if (current_step % args['log_every']) == 0:
+            print('Step {} loss {}.'.format(current_step,loss))
 
-            sess.run(extra['zero_ops'])
-            summaries = []
-            total_loss = 0.0
-
-            for count in range(args['virtual_batches']):
-
-                #first, choose whether to feed spectra with unknown or known weight ratios.
-                prob_supervised = args['prob_supervised']
-                choose_supervised = random.choices([True, False], weights=[prob_supervised, 1. - prob_supervised])[0]
-                if choose_supervised:
-                    # supervised (i.e. known weight ratios)
-                    indecies = supervised_fresh.get(args['batch_size'])
-                    s = supervised_dataset['s'][indecies]
-                    m = supervised_dataset['m'][indecies]
-                    z = supervised_dataset['z'][indecies]
-
-                else:
-                    # unsupervised
-                    indecies = unsupervised_fresh.get(args['batch_size'])
-                    s = unsupervised_dataset['s'][indecies]
-                    m = unsupervised_dataset['m'][indecies]
-                    z = unsupervised_dataset['z'][indecies]
-
-                #Run a single training step through the optimizer, either accumulating the updates
-                # or directly applying the accumulated updates afterwards.
-                if count < args['virtual_batches'] - 1:
-                    summary, loss_value, _, test = \
-                        sess.run([model.merger, loss, extra['accum_ops'], extra['test_ops']],
-                                 feed_dict={batch_size: args['batch_size'],
-                                            model.dropout: args['dropout'],
-                                            pristine_spectra: s,
-                                            mass_ratios: m,
-                                            z_supervised: z,
-                                            learning_rate: args['learning_rate'],
-                                            model.prediction_coeff: args['prediction_coeff'],
-                                            model.positivity_coeff: args['positivity_coeff'],
-                                            model.normalization_coeff: args['normalization_coeff'],
-                                            model.small_x_coeff: args['small_x_coeff'],
-                                            model.small_linear_coeff: args['small_linear_coeff'],
-                                            model.small_dA_coeff: args['small_dA_coeff'],
-                                            })
-
-                else:
-                    summary, loss_value, _, test, step_value, s_out, m_out = \
-                        sess.run([model.merger, loss, extra['train_step'], extra['test_ops'], increment_step,
-                                  extra['reconstructed_spectra'], extra['predicted_mass_ratios']],
-                                 feed_dict={batch_size: args['batch_size'],
-                                            model.dropout: args['dropout'],
-                                            pristine_spectra: s,
-                                            mass_ratios: m,
-                                            z_supervised: z,
-                                            learning_rate: args['learning_rate'],
-                                            model.prediction_coeff: args['prediction_coeff'],
-                                            model.positivity_coeff: args['positivity_coeff'],
-                                            model.normalization_coeff: args['normalization_coeff'],
-                                            model.small_x_coeff: args['small_x_coeff'],
-                                            model.small_linear_coeff: args['small_linear_coeff'],
-                                            model.small_dA_coeff: args['small_dA_coeff'],
-                                            })
-
-                    if args['visuals']:
-                        # this shows predictions versus measured for both spectra and weight ratios.
-                        for i in range(args['batch_size']):
-                            plt.scatter(range(num_samples), s[i, :])
-                            plt.plot(range(num_samples), s_out[i, :])
-                            plt.show()
-                            plt.scatter(range(num_concentrations), m[i, :], c='r')
-                            plt.scatter(range(num_concentrations), m_out[i, :], c='b')
-                            plt.show()
-
-                summaries.append(summary)
-                total_loss += loss_value
-
-            total_loss /= float(args['virtual_batches'])
-
-            if not math.isfinite(total_loss):
-                print('was not finite')
-                # sess.run(tf.global_variables_initializer())
-                # sess.run(zero_ops)
-                # print('restarted')
-                # continue
-
-            if step_value % args['log_every'] == 0:
-                #diagnostics and printouts
-                print(
-                    'Step {} loss {}.'.format(step_value, total_loss))
-                for summary in summaries:
-                    model.train_writer.add_summary(summary, step_value)
-
-            if step_value % args['checkpoint_every'] == 0:
-                # save checkpoint
-                print('Saving checkpoint.')
-                saver.save(sess, os.path.join(args['logdir'], 'model.ckpt'), step_value)
+        if (current_step % args['checkpoint_every']) == 0:
+            save_path = trainer.manager.save()
+            print("Saved checkpoint for step {}: {}".format(current_step, save_path))
 
 
 def run_on_all_data(args):
@@ -633,121 +459,82 @@ def run_on_all_data(args):
     """
     num_concentrations = args['num_concentrations']
     num_samples = args['num_samples']
+
+
+
+
     for spec in FTIRSpectrum.objects.filter(supervised=True):
         wanted_wavenumbers = numpy.array(
             [samp.wavenumber for samp in FTIRSample.objects.filter(spectrum=spec).order_by('index')])
         break
 
-    # Create supervised dataset
-    supervised_dataset = {'s': [], 'm': [], 'z': [], 'f': []}
-    num_supervised = 0
-    for spec in FTIRSpectrum.objects.filter(supervised=True):
-        supervised_dataset['f'].append(spec.filename)
-        supervised_dataset['z'].append(1.)
-        supervised_dataset['m'].append([spec.LIPF6_mass_ratio, spec.EC_mass_ratio, spec.EMC_mass_ratio,
-                                        spec.DMC_mass_ratio, spec.DEC_mass_ratio])
+    res = get_data()
 
-        supervised_dataset['s'].append(
-            [samp.absorbance for samp in FTIRSample.objects.filter(spectrum=spec).order_by('index')])
 
-        num_supervised += 1
+    trainer = Trainer(num_concentrations, num_samples, args, trainable=False)
 
-    supervised_dataset['s'] = numpy.array(supervised_dataset['s'])
-    supervised_dataset['m'] = numpy.array(supervised_dataset['m'])
-    supervised_dataset['z'] = numpy.array(supervised_dataset['z'])
 
-    unsupervised_dataset = {'s': [], 'm': [], 'z': []}
-    num_unsupervised = 0
-    for spec in FTIRSpectrum.objects.filter(supervised=False):
-        unsupervised_dataset['z'].append(0.)
-        unsupervised_dataset['m'].append(5 * [0.])
-        unsupervised_dataset['s'].append(
-            [samp.absorbance for samp in FTIRSample.objects.filter(spectrum=spec).order_by('index')])
-        num_unsupervised += 1
+    r = trainer.model(res['supervised']['s'])
+    s_out = r['reconstructed_spectra']
+    s_comp_out = r['reconstructed_spectra_components']
+    m_out = r['predicted_mass_ratios']
 
-    unsupervised_dataset['s'] = numpy.array(unsupervised_dataset['s'])
-    unsupervised_dataset['m'] = numpy.array(unsupervised_dataset['m'])
-    unsupervised_dataset['z'] = numpy.array(unsupervised_dataset['z'])
+    if not os.path.exists(args['output_dir']):
+        os.mkdir(args['output_dir'])
 
-    if not args['seed'] == 0:
-        random.seed(a=args['seed'])
+    for index in range(len(res['supervised']['f'])):
 
-    pristine_spectra = tf.placeholder(tf.float32, [None, num_samples])
+        fig = plt.figure(figsize=(16, 4))
+        ax = fig.add_subplot(111)
+        partials = range(0, len(res['supervised']['s'][index]), 8)
 
-    pos_spectra = tf.nn.relu(pristine_spectra)
+        ax.scatter(wanted_wavenumbers[partials], res['supervised']['s'][index][partials], c='k', s=100,
+                   label='Measured')
+        ax.plot(wanted_wavenumbers[:len(res['supervised']['s'][index])], s_out[index, :], linewidth=6, linestyle='-', c='0.2',
+                label='Full Reconstruction')
+        colors = ['r', 'b', 'g', 'm', 'c']
+        comps = ['LiPF6', 'EC', 'EMC', 'DMC', 'DEC']
+        for comp in range(5):
+            ax.plot(wanted_wavenumbers[:len(res['supervised']['s'][index])],
+                    s_comp_out[index, :, comp], c=colors[comp],
+                    linewidth=2, linestyle='--',
+                    label='T: {:1.2f}, P: {:1.2f} (kg/kg) [{}]'.format(res['supervised']['m'][index][comp], m_out[index, comp],
+                                                                       comps[comp]))
 
-    model = LinearAModel(trainable=False, num_concentrations=num_concentrations, num_samples=num_samples)
+        ax.legend()
+        ax.set_xlabel('Wavenumber')
+        ax.set_xlim(700, 1900)
+        ax.set_ylabel('Absorbance (abu)')
 
-    res = \
-        model.build_forward(
-            input_spectra=pos_spectra
-        )
+        fig.savefig(os.path.join(args['output_dir'], 'Reconstruction_{}_{}_{}_{}_{}.svg'.format(
+            int(100 * res['supervised']['m'][index][0]),
+            int(100 * res['supervised']['m'][index][1]),
+            int(100 * res['supervised']['m'][index][2]),
+            int(100 * res['supervised']['m'][index][3]),
+            int(100 * res['supervised']['m'][index][4]))))
+        plt.close(fig)
 
-    with initialize_session(args['logdir'], seed=args['seed']) as (sess, saver):
-        s = supervised_dataset['s']
-        m = supervised_dataset['m']
-        z = supervised_dataset['z']
-        f = supervised_dataset['f']
-        s_out, s_comp_out, m_out = \
-            sess.run(
-                [res['reconstructed_spectra'], res['reconstructed_spectra_components'], res['predicted_mass_ratios']],
-                feed_dict={model.dropout: 0.0,
-                           pristine_spectra: s
-                           })
+        with open(os.path.join(args['output_dir'], res['supervised']['f'][index].split('.asp')[0] + '.csv'), 'w', newline='') as csvfile:
+            spamwriter = csv.writer(csvfile)
+            spamwriter.writerow(['Wavenumber (cm^-1)',
+                                 'Measured Absorbance (abu)',
+                                 'Full Reconstruction Absorbance (abu)',
+                                 'LiPF6 Absorbance (abu)',
+                                 'EC Absorbance (abu)',
+                                 'EMC Absorbance (abu)',
+                                 'DMC Absorbance (abu)',
+                                 'DEC Absorbance (abu)'
+                                 ])
 
-        if not os.path.exists(args['output_dir']):
-            os.mkdir(args['output_dir'])
-
-        for index in range(len(f)):
-
-            fig = plt.figure(figsize=(16, 4))
-            ax = fig.add_subplot(111)
-            partials = range(0, len(s[index]), 8)
-
-            ax.scatter(wanted_wavenumbers[partials], s[index][partials], c='k', s=100,
-                       label='Measured')
-            ax.plot(wanted_wavenumbers[:len(s[index])], s_out[index, :], linewidth=6, linestyle='-', c='0.2',
-                    label='Full Reconstruction')
-            colors = ['r', 'b', 'g', 'm', 'c']
-            comps = ['LiPF6', 'EC', 'EMC', 'DMC', 'DEC']
-            for comp in range(5):
-                ax.plot(wanted_wavenumbers[:len(s[index])],
-                        s_comp_out[index, :, comp], c=colors[comp],
-                        linewidth=2, linestyle='--',
-                        label='T: {:1.2f}, P: {:1.2f} (kg/kg) [{}]'.format(m[index][comp], m_out[index, comp],
-                                                                           comps[comp]))
-
-            ax.legend()
-            ax.set_xlabel('Wavenumber')
-            ax.set_xlim(700, 1900)
-            ax.set_ylabel('Absorbance (abu)')
-
-            fig.savefig(os.path.join(args['output_dir'], 'Reconstruction_{}_{}_{}_{}_{}.svg'.format(
-                int(100 * m[index][0]),
-                int(100 * m[index][1]),
-                int(100 * m[index][2]),
-                int(100 * m[index][3]),
-                int(100 * m[index][4]))))
-            plt.close(fig)
-
-            with open(os.path.join(args['output_dir'], f[index].split('.asp')[0] + '.csv'), 'w', newline='') as csvfile:
-                spamwriter = csv.writer(csvfile)
-                spamwriter.writerow(['Wavenumber (cm^-1)',
-                                     'Measured Absorbance (abu)',
-                                     'Full Reconstruction Absorbance (abu)',
-                                     'LiPF6 Absorbance (abu)',
-                                     'EC Absorbance (abu)',
-                                     'EMC Absorbance (abu)',
-                                     'DMC Absorbance (abu)',
-                                     'DEC Absorbance (abu)'
-                                     ])
-
-                for k in range(len(s[index])):
-                    spamwriter.writerow([str(wanted_wavenumbers[k]), str(s[index][k]), str(s_out[index, k])] +
-                                        [str(s_comp_out[index, k, comp]) for comp in range(5)])
+            for k in range(len(s[index])):
+                spamwriter.writerow([str(wanted_wavenumbers[k]), str(res['supervised']['m'][index][k]), str(s_out[index, k])] +
+                                    [str(s_comp_out[index, k, comp]) for comp in range(5)])
 
 
 def cross_validation(args):
+    if not os.path.exists(args['cross_validation_dir']):
+        os.mkdir(args['cross_validation_dir'])
+    
     """
     Run a fake training run by splitting the dataset into train and test,
     only recording the predictions on the test set for later processing.
@@ -758,44 +545,10 @@ def cross_validation(args):
 
     id = random.randint(a=0, b=100000)
     # Create supervised dataset
-    supervised_dataset = {'s': [], 'm': [], 'z': []}
-    num_supervised = 0
-    ec_ratios = []
-    LIPF6_ratios = []
-    for spec in FTIRSpectrum.objects.filter(supervised=True):
-        supervised_dataset['z'].append(1.)
-        supervised_dataset['m'].append([spec.LIPF6_mass_ratio, spec.EC_mass_ratio, spec.EMC_mass_ratio,
-                                        spec.DMC_mass_ratio, spec.DEC_mass_ratio])
-        ec_ratios.append(spec.EC_mass_ratio / (
-                spec.EC_mass_ratio + spec.EMC_mass_ratio + spec.DMC_mass_ratio + spec.DEC_mass_ratio))
-        LIPF6_ratios.append(spec.LIPF6_mass_ratio / (
-                spec.EC_mass_ratio + spec.EMC_mass_ratio + spec.DMC_mass_ratio + spec.DEC_mass_ratio))
-
-        supervised_dataset['s'].append(
-            [samp.absorbance for samp in FTIRSample.objects.filter(spectrum=spec).order_by('index')])
-
-        num_supervised += 1
-
-    supervised_dataset['s'] = numpy.array(supervised_dataset['s'])
-    supervised_dataset['m'] = numpy.array(supervised_dataset['m'])
-    supervised_dataset['z'] = numpy.array(supervised_dataset['z'])
-
-    unsupervised_dataset = {'s': [], 'm': [], 'z': []}
-    num_unsupervised = 0
-    for spec in FTIRSpectrum.objects.filter(supervised=False):
-        unsupervised_dataset['z'].append(0.)
-        unsupervised_dataset['m'].append(5 * [0.])
-        unsupervised_dataset['s'].append(
-            [samp.absorbance for samp in FTIRSample.objects.filter(spectrum=spec).order_by('index')])
-        num_unsupervised += 1
-
-    unsupervised_dataset['s'] = numpy.array(unsupervised_dataset['s'])
-    unsupervised_dataset['m'] = numpy.array(unsupervised_dataset['m'])
-    unsupervised_dataset['z'] = numpy.array(unsupervised_dataset['z'])
-
+    res = get_data()
     clusters = []
-    for i in range(num_supervised):
-        ratio = supervised_dataset['m'][i, :]
+    for i in range(len(res['supervised']['s'])):
+        ratio = res['supervised']['m'][i, :]
         found = False
         for j in range(len(clusters)):
             reference = clusters[j][0]
@@ -810,11 +563,11 @@ def cross_validation(args):
 
     supervised_list = list(range(num_supervised))
     random.shuffle(supervised_list)
-    unsupervised_list = list(range(num_unsupervised))
+    unsupervised_list = list(range(len(res['unsupervised']['s'])))
     random.shuffle(unsupervised_list)
 
     test_supervised_n = int(num_supervised * args['test_ratios'])
-    test_unsupervised_n = int(num_unsupervised * args['test_ratios'])
+    test_unsupervised_n = int(len(res['unsupervised']['z']) * args['test_ratios'])
 
     supervised_train_list = []
     for i in supervised_list[test_supervised_n:]:
@@ -824,205 +577,81 @@ def cross_validation(args):
     for i in supervised_list[:test_supervised_n]:
         supervised_test_list += clusters[i][1]
 
-    supervised_fresh_train = GetFresh(list_of_indecies=numpy.array(supervised_train_list))
-    supervised_fresh_test = GetFresh(list_of_indecies=numpy.array(supervised_test_list))
+    supervised_train_indecies = numpy.array(supervised_train_list)
+    supervised_test_indecies = numpy.array(supervised_test_list)
 
-    unsupervised_fresh_train = GetFresh(list_of_indecies=unsupervised_list[test_unsupervised_n:])
-    unsupervised_fresh_test = GetFresh(list_of_indecies=unsupervised_list[:test_unsupervised_n])
+    supervised_dataset_train = tf.data.Dataset.from_tensor_slices((
+        res['supervised']['s'][supervised_train_indecies],
+        res['supervised']['m'][supervised_train_indecies],
+        res['supervised']['z'][supervised_train_indecies],
 
-    if not args['seed'] == 0:
-        random.seed(a=args['seed'])
-
-    batch_size = tf.placeholder(dtype=tf.int32)
-    learning_rate = tf.placeholder(dtype=tf.float32)
-
-    pristine_spectra = tf.placeholder(tf.float32, [None, num_samples])
-
-    pos_spectra = tf.nn.relu(tf.expand_dims(pristine_spectra, axis=2))
-    average_absorbance = tf.reduce_mean(pos_spectra, axis=[0, 1, 2])
-
-    noised_spectra = tf.nn.relu(
-        pos_spectra +
-        tf.random.normal(
-            shape=[batch_size, num_samples, 1],
-            mean=0.,
-            stddev=average_absorbance * args['noise_level']))
-
-    num_filter_d = tf.random.uniform(shape=[1], minval=2, maxval=5, dtype=tf.int32)[0]
-    temperature = 1e-8 + tf.exp(
-        tf.random.uniform(shape=[1], minval=-2., maxval=args['largest_temp_exp'], dtype=tf.float32))
-    filter1 = tf.reshape(tf.nn.softmax(
-        -tf.abs(tf.to_float(tf.range(
-            start=-num_filter_d,
-            limit=num_filter_d + 1,
-            dtype=tf.int32))) / temperature),
-        [2 * num_filter_d + 1, 1, 1])
-    augmented_spectra = tf.nn.conv1d(noised_spectra, filter1, stride=1, padding="SAME")[:, :, 0]
-
-    mass_ratios = tf.placeholder(tf.float32, [None, num_concentrations])
-    z_supervised = tf.placeholder(tf.float32, [None])
-
-    model = LinearAModel(trainable=True, num_concentrations=num_concentrations, num_samples=num_samples)
-
-    loss, extra = \
-        model.optimize(
-            input_spectra=augmented_spectra,
-            input_mass_ratios=mass_ratios,
-            input_z_supervised=z_supervised,
-            learning_rate=learning_rate,
-            global_norm_clip=args['global_norm_clip'],
-            logdir=args['logdir']
         )
-
-    res = model.build_forward(
-        input_spectra=tf.nn.relu(pristine_spectra)
     )
-
-    step = tf.train.get_or_create_global_step()
-    increment_step = step.assign_add(1)
-
-    with tf.Session() as sess:
-        sess.run(tf.global_variables_initializer())
-
-        while True:
-            current_step = sess.run(step)
-            if current_step >= args['total_steps'] or current_step % args['log_every'] == 0:
-                if current_step >= args['total_steps']:
-                    print('Training complete.')
-                indecies = supervised_fresh_test.GetFresh_list
-                s = supervised_dataset['s'][indecies]
-                m = supervised_dataset['m'][indecies]
-                z = supervised_dataset['z'][indecies]
-
-                s_out, m_out = \
-                    sess.run([res['reconstructed_spectra'], res['predicted_mass_ratios']],
-                             feed_dict={batch_size: len(indecies),
-                                        model.dropout: 0.0,
-                                        pristine_spectra: s,
-                                        mass_ratios: m,
-                                        z_supervised: z,
-                                        })
+    supervised_s_test =  res['supervised']['s'][supervised_test_indecies]
+    supervised_m_test =  res['supervised']['m'][supervised_test_indecies],
 
 
+    unsupervised_train_indecies = unsupervised_list[test_unsupervised_n:]
 
-                with open(os.path.join(args['cross_validation_dir'],
-                                       'Test_data_test_percent_{}_id_{}_step_{}.file'.format(
-                                               int(100 * args['test_ratios']), id, current_step)), 'wb') as f:
-                    pickle.dump({'m': m, 'm_out': m_out, 's': s, 's_out': s_out}, f, pickle.HIGHEST_PROTOCOL)
+    unsupervised_dataset_train = tf.data.Dataset.from_tensor_slices((
 
-                if False:  # current_step >= args['total_steps']:
-                    for i in range(len(indecies)):
-                        plt.scatter(range(num_samples), s[i, :])
-                        plt.plot(range(num_samples), s_out[i, :])
-                        plt.show()
-                        plt.scatter(range(num_concentrations), m[i, :], c='r')
-                        plt.scatter(range(num_concentrations), m_out[i, :], c='b')
-                        plt.show()
+        res['unsupervised']['s'][unsupervised_train_indecies],
+        res['unsupervised']['m'][unsupervised_train_indecies],
+        res['unsupervised']['z'][unsupervised_train_indecies],
 
-                '''
-                indecies = unsupervised_fresh_test.GetFresh_list
-                s = unsupervised_dataset['s'][indecies]
-                m = unsupervised_dataset['m'][indecies]
-                z = unsupervised_dataset['z'][indecies]
+        )
+    )
+    '''
+    unsupervised_dataset_test = tf.data.Dataset.from_tensor_slices(
+        res['unsupervised']['s'][unsupervised_test_indecies],
+        res['unsupervised']['m'][unsupervised_test_indecies],
+        res['unsupervised']['z'][unsupervised_test_indecies],
 
-                s_out, m_out = \
-                    sess.run([res['reconstructed_spectra'], res['predicted_mass_ratios']],
-                        feed_dict={batch_size: len(indecies),
-                                model.dropout: 0.0,
-                                pristine_spectra: s,
-                                mass_ratios: m,
-                                z_supervised: z,
-                                })
+    )
+    '''
+
+    dataset_train = tf.data.experimental.sample_from_datasets(
+        datasets=(
+            supervised_dataset_train.shuffle(10000).repeat(),
+            unsupervised_dataset_train.shuffle(10000).repeat(),
+        ),
+        weights=[args['prob_supervised'], 1. - args['prob_supervised']]
+    )
+    dataset_train = dataset_train.batch(args['batch_size'])
+    # this is where we define the model and optimizer.
+
+    trainer = Trainer(num_concentrations, num_samples, args, trainable=True, checkpointing=False)
+
+    current_step = 0
+    for s, m, z in dataset_train:
 
 
-                fig = plt.figure()
-                ax = fig.add_subplot(111, projection='3d')
-                ax.scatter(m_out[:,0], m_out[:,1], numpy.sqrt(numpy.mean((s_out - s)**2, axis=1)),c='k')
-                plt.show()
-                '''
-                if current_step >= args['total_steps']:
-                    break
+        if current_step >= args['total_steps'] or current_step % args['log_every'] == 0:
+            if current_step >= args['total_steps']:
+                print('Training complete.')
+            r = trainer.model(supervised_s_test)
+            s_out = r['reconstructed_spectra']
+            m_out = r['predicted_mass_ratios']
 
-            sess.run(extra['zero_ops'])
-            summaries = []
-            total_loss = 0.0
 
-            for count in range(args['virtual_batches']):
+            with open(os.path.join(args['cross_validation_dir'],
+                                   'Test_data_test_percent_{}_id_{}_step_{}.file'.format(
+                                           int(100 * args['test_ratios']), id, current_step)), 'wb') as f:
+                pickle.dump({
+                    'm': supervised_m_test,
+                    'm_out': m_out.numpy(),
+                    's': supervised_s_test,
+                    's_out': s_out.numpy()}, f, pickle.HIGHEST_PROTOCOL)
 
-                prob_supervised = args['prob_supervised']
-                choose_supervised = random.choices([True, False], weights=[prob_supervised, 1. - prob_supervised])[0]
-                if choose_supervised:
-                    # supervised
-                    indecies = supervised_fresh_train.get(args['batch_size'])
-                    s = supervised_dataset['s'][indecies]
-                    m = supervised_dataset['m'][indecies]
-                    z = supervised_dataset['z'][indecies]
 
-                else:
-                    # supervised
-                    indecies = unsupervised_fresh_train.get(args['batch_size'])
-                    s = unsupervised_dataset['s'][indecies]
-                    m = unsupervised_dataset['m'][indecies]
-                    z = unsupervised_dataset['z'][indecies]
+            if current_step >= args['total_steps']:
+                break
 
-                if count < args['virtual_batches'] - 1:
-                    loss_value, _, test = \
-                        sess.run([loss, extra['accum_ops'], extra['test_ops']],
-                                 feed_dict={batch_size: args['batch_size'],
-                                            model.dropout: args['dropout'],
-                                            pristine_spectra: s,
-                                            mass_ratios: m,
-                                            z_supervised: z,
-                                            learning_rate: args['learning_rate'],
-                                            model.prediction_coeff: args['prediction_coeff'],
-                                            model.positivity_coeff: args['positivity_coeff'],
-                                            model.normalization_coeff: args['normalization_coeff'],
-                                            model.small_x_coeff: args['small_x_coeff'],
-                                            model.small_linear_coeff: args['small_linear_coeff'],
-                                            model.small_dA_coeff: args['small_dA_coeff'],
-                                            })
+        loss = trainer.train_step(s, m, z, args['batch_size'])
 
-                else:
-                    loss_value, _, test, step_value, s_out, m_out = \
-                        sess.run([loss, extra['train_step'], extra['test_ops'], increment_step,
-                                  extra['reconstructed_spectra'], extra['predicted_mass_ratios']],
-                                 feed_dict={batch_size: args['batch_size'],
-                                            model.dropout: args['dropout'],
-                                            pristine_spectra: s,
-                                            mass_ratios: m,
-                                            z_supervised: z,
-                                            learning_rate: args['learning_rate'],
-                                            model.prediction_coeff: args['prediction_coeff'],
-                                            model.positivity_coeff: args['positivity_coeff'],
-                                            model.normalization_coeff: args['normalization_coeff'],
-                                            model.small_x_coeff: args['small_x_coeff'],
-                                            model.small_linear_coeff: args['small_linear_coeff'],
-                                            model.small_dA_coeff: args['small_dA_coeff'],
-                                            })
-
-                    if args['visuals']:
-                        for i in range(args['batch_size']):
-                            plt.scatter(range(num_samples), s[i, :])
-                            plt.plot(range(num_samples), s_out[i, :])
-                            plt.show()
-                            plt.scatter(range(num_concentrations), m[i, :], c='r')
-                            plt.scatter(range(num_concentrations), m_out[i, :], c='b')
-                            plt.show()
-
-                total_loss += loss_value
-
-            total_loss /= float(args['virtual_batches'])
-
-            if not math.isfinite(total_loss):
-                print('was not finite')
-                # sess.run(tf.global_variables_initializer())
-                # sess.run(zero_ops)
-                # print('restarted')
-                # continue
-
-            if step_value % args['log_every'] == 0:
-                print(
-                    'Step {} loss {}.'.format(step_value, total_loss))
+        current_step += 1
+        if (current_step % args['log_every']) == 0:
+            print('Step {} loss {}.'.format(current_step, loss))
 
 
 
@@ -1485,7 +1114,7 @@ def run_on_directory(args):
         filenames_input.append(filename)
         spectra_input.append(numpy.array(dat[:num_samples]))
 
-    s = numpy.array(spectra_input)
+    s = numpy.array(spectra_input, dtype=numpy.float32)
 
     for spec in FTIRSpectrum.objects.filter(supervised=True):
         wanted_wavenumbers = numpy.array(
@@ -1494,112 +1123,96 @@ def run_on_directory(args):
 
     f = filenames_input
 
-    if not args['seed'] == 0:
-        random.seed(a=args['seed'])
+    trainer = Trainer(num_concentrations, num_samples, args, trainable=False)
+
+    r = trainer.model(s)
+    s_out = r['reconstructed_spectra'].numpy()
+    s_comp_out = r['reconstructed_spectra_components'].numpy()
+    m_out = r['predicted_mass_ratios'].numpy()
 
     # Then, define the model
-    pristine_spectra = tf.placeholder(tf.float32, [None, num_samples])
-
-    pos_spectra = tf.nn.relu(pristine_spectra)
-
-    model = LinearAModel(trainable=False, num_concentrations=num_concentrations, num_samples=num_samples)
-
-    res = \
-        model.build_forward(
-            input_spectra=pos_spectra
-        )
 
     if not os.path.exists(args['output_dir']):
         os.mkdir(args['output_dir'])
 
-    # This loads the pretrained model.
-    with initialize_session(args['logdir'], seed=args['seed']) as (sess, saver):
-
-        # this runs the model on the data.
-        s_out, s_comp_out, m_out = \
-            sess.run(
-                [res['reconstructed_spectra'], res['reconstructed_spectra_components'], res['predicted_mass_ratios']],
-                feed_dict={model.dropout: 0.0,
-                           pristine_spectra: s
-                           })
 
 
-        # this outputs the results.
+    # this outputs the results.
+    for index in range(len(f)):
+        filename_output = f[index]
+        filename_output = filename_output.split('.asp')[0].replace('\\', '__').replace('/', '__')
+
+        fig = plt.figure(figsize=(16, 9))
+        ax = fig.add_subplot(111)
+        partials = range(0, len(s[index]), 8)
+
+        ax.scatter(wanted_wavenumbers[partials], s[index][partials], c='k', s=100,
+                   label='Measured')
+        ax.plot(wanted_wavenumbers[:len(s[index])], s_out[index, :], linewidth=6, linestyle='-', c='0.2',
+                label='Full Reconstruction')
+        colors = ['r', 'b', 'g', 'm', 'c']
+        comps = ['LiPF6', 'EC', 'EMC', 'DMC', 'DEC']
+        for comp in range(5):
+            ax.plot(wanted_wavenumbers[:len(s[index])],
+                    s_comp_out[index, :, comp], c=colors[comp],
+                    linewidth=2, linestyle='--',
+                    label='Predicted: {:1.3f} (kg/kg) [{}]'.format(m_out[index, comp], comps[comp]))
+
+        ax.legend()
+        ax.set_xlabel('Wavenumber (cm^-1)')
+        ax.set_xlim(700, 1900)
+        ax.set_ylabel('Absorbance (abu)')
+
+        fig.savefig(os.path.join('.', args['output_dir'], filename_output + '_RECONSTRUCTION_COMPONENTS.png'))
+        plt.close(fig)
+
+        fig = plt.figure(figsize=(16, 9))
+        ax = fig.add_subplot(111)
+        partials = range(0, len(s[index]))
+
+        ax.scatter(wanted_wavenumbers[partials], s[index][partials], c='k', s=100,
+                   label='Measured')
+        ax.plot(wanted_wavenumbers[:len(s[index])], s_out[index, :], linewidth=1, linestyle='-', c='r',
+                label='Full Reconstruction')
+
+        ax.legend()
+        ax.set_xlabel('Wavenumber (cm^-1)')
+        ax.set_xlim(700, 1900)
+        ax.set_ylabel('Absorbance (abu)')
+
+        fig.savefig(os.path.join('.', args['output_dir'], filename_output + '_RECONSTRUCTION.png'))
+        plt.close(fig)
+
+        with open(os.path.join(args['output_dir'], filename_output + '_RECONSTRUCTION_COMPONENTS.csv'), 'w',
+                  newline='') as csvfile:
+            spamwriter = csv.writer(csvfile)
+            spamwriter.writerow(['Wavenumber (cm^-1)',
+                                 'Measured Absorbance (abu)',
+                                 'Full Reconstruction Absorbance (abu)',
+                                 'LiPF6 Absorbance (abu)',
+                                 'EC Absorbance (abu)',
+                                 'EMC Absorbance (abu)',
+                                 'DMC Absorbance (abu)',
+                                 'DEC Absorbance (abu)'
+                                 ])
+
+            for k in range(len(s[index])):
+                spamwriter.writerow([str(wanted_wavenumbers[k]), str(s[index][k]), str(s_out[index, k])] +
+                                    [str(s_comp_out[index, k, comp]) for comp in range(5)])
+
+    with open(os.path.join('.', args['output_dir'], 'PredictedWeightRatios.csv'), 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile, delimiter=',')
+        writer.writerow(['Original Filename',
+                         'LiPF6 Mass Ratio (kg/kg)',
+                         'EC Mass Ratio (kg/kg)',
+                         'EMC Mass Ratio (kg/kg)',
+                         'DMC Mass Ratio (kg/kg)',
+                         'DEC Mass Ratio (kg/kg)'
+                         ])
         for index in range(len(f)):
-            filename_output = f[index]
-            filename_output = filename_output.split('.asp')[0].replace('\\', '__').replace('/', '__')
-
-            fig = plt.figure(figsize=(16, 9))
-            ax = fig.add_subplot(111)
-            partials = range(0, len(s[index]), 8)
-
-            ax.scatter(wanted_wavenumbers[partials], s[index][partials], c='k', s=100,
-                       label='Measured')
-            ax.plot(wanted_wavenumbers[:len(s[index])], s_out[index, :], linewidth=6, linestyle='-', c='0.2',
-                    label='Full Reconstruction')
-            colors = ['r', 'b', 'g', 'm', 'c']
-            comps = ['LiPF6', 'EC', 'EMC', 'DMC', 'DEC']
-            for comp in range(5):
-                ax.plot(wanted_wavenumbers[:len(s[index])],
-                        s_comp_out[index, :, comp], c=colors[comp],
-                        linewidth=2, linestyle='--',
-                        label='Predicted: {:1.3f} (kg/kg) [{}]'.format(m_out[index, comp], comps[comp]))
-
-            ax.legend()
-            ax.set_xlabel('Wavenumber (cm^-1)')
-            ax.set_xlim(700, 1900)
-            ax.set_ylabel('Absorbance (abu)')
-
-            fig.savefig(os.path.join('.', args['output_dir'], filename_output + '_RECONSTRUCTION_COMPONENTS.png'))
-            plt.close(fig)
-
-            fig = plt.figure(figsize=(16, 9))
-            ax = fig.add_subplot(111)
-            partials = range(0, len(s[index]))
-
-            ax.scatter(wanted_wavenumbers[partials], s[index][partials], c='k', s=100,
-                       label='Measured')
-            ax.plot(wanted_wavenumbers[:len(s[index])], s_out[index, :], linewidth=1, linestyle='-', c='r',
-                    label='Full Reconstruction')
-
-            ax.legend()
-            ax.set_xlabel('Wavenumber (cm^-1)')
-            ax.set_xlim(700, 1900)
-            ax.set_ylabel('Absorbance (abu)')
-
-            fig.savefig(os.path.join('.', args['output_dir'], filename_output + '_RECONSTRUCTION.png'))
-            plt.close(fig)
-
-            with open(os.path.join(args['output_dir'], filename_output + '_RECONSTRUCTION_COMPONENTS.csv'), 'w',
-                      newline='') as csvfile:
-                spamwriter = csv.writer(csvfile)
-                spamwriter.writerow(['Wavenumber (cm^-1)',
-                                     'Measured Absorbance (abu)',
-                                     'Full Reconstruction Absorbance (abu)',
-                                     'LiPF6 Absorbance (abu)',
-                                     'EC Absorbance (abu)',
-                                     'EMC Absorbance (abu)',
-                                     'DMC Absorbance (abu)',
-                                     'DEC Absorbance (abu)'
-                                     ])
-
-                for k in range(len(s[index])):
-                    spamwriter.writerow([str(wanted_wavenumbers[k]), str(s[index][k]), str(s_out[index, k])] +
-                                        [str(s_comp_out[index, k, comp]) for comp in range(5)])
-
-        with open(os.path.join('.', args['output_dir'], 'PredictedWeightRatios.csv'), 'w', newline='') as csvfile:
-            writer = csv.writer(csvfile, delimiter=',')
-            writer.writerow(['Original Filename',
-                             'LiPF6 Mass Ratio (kg/kg)',
-                             'EC Mass Ratio (kg/kg)',
-                             'EMC Mass Ratio (kg/kg)',
-                             'DMC Mass Ratio (kg/kg)',
-                             'DEC Mass Ratio (kg/kg)'
-                             ])
-            for index in range(len(f)):
-                writer.writerow(
-                    [f[index]] +
-                    ['{:1.3f}'.format(x) for x in m_out[index]])
+            writer.writerow(
+                [f[index]] +
+                ['{:1.3f}'.format(x) for x in m_out[index]])
 
 
 class Command(BaseCommand):
