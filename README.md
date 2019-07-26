@@ -1,3 +1,4 @@
+Note: do not use this branch. Always use the master branch!!!
 # Locations
 ## Folders
 - LinearA_trained contains a pretrained model. 
