@@ -72,7 +72,7 @@ class LinearAModel(tf.keras.Model):
 
     """
 
-    def __init__(self, num_concentrations, num_samples,trainable=True):
+    def __init__(self, num_concentrations, num_samples,trainable=True, constant_vm=False):
         """
         This defines the parameters of the model.
         :param trainable:
@@ -92,7 +92,7 @@ class LinearAModel(tf.keras.Model):
         self.num_concentrations = num_concentrations
         self.num_samples = num_samples
         self.trainable = trainable
-
+        self.constant_vm = constant_vm
         # the log-magnitude of X
         self.x = self.add_variable(
             name='x',
@@ -111,14 +111,24 @@ class LinearAModel(tf.keras.Model):
             trainable=trainable,
         )
 
-        # This goes from concentrations to spectrum
-        self.A = self.add_variable(
-            name='A',
-            shape=[num_concentrations, num_samples, num_concentrations],
-            dtype=tf.float32,
-            initializer=tf.initializers.orthogonal(),
-            trainable=trainable,
-        )
+        if constant_vm:
+            # This goes from concentrations to spectrum
+            self.A = self.add_variable(
+                name='A',
+                shape=[ num_samples, num_concentrations],
+                dtype=tf.float32,
+                initializer=tf.initializers.orthogonal(),
+                trainable=trainable,
+            )
+        else:
+            # This goes from concentrations to spectrum
+            self.A = self.add_variable(
+                name='A',
+                shape=[num_concentrations, num_samples, num_concentrations],
+                dtype=tf.float32,
+                initializer=tf.initializers.orthogonal(),
+                trainable=trainable,
+            )
 
 
     def call(self, input_spectra, training=False):
@@ -161,23 +171,42 @@ class LinearAModel(tf.keras.Model):
         # - a wavenumber index s,
         #
         # Then, the second einsum applies the matrix to the predicted concentrations to reconstruct spectra.
-        reconstructed_spectra = tf.einsum('bsc,bc->bs',
-                                          tf.einsum('dsc,bd->bsc',
-                                                    tf.exp(self.A),
-                                                    predicted_mass_ratios
-                                                    ),
-                                          F_relu
-                                          )
+        if self.constant_vm:
+            reconstructed_spectra = tf.einsum(
+                'sc,bc->bs',
+                tf.exp(self.A),
+                F_relu
+            )
+        else:
+            reconstructed_spectra = tf.einsum('bsc,bc->bs',
+                                              tf.einsum('dsc,bd->bsc',
+                                                        tf.exp(self.A),
+                                                        predicted_mass_ratios
+                                                        ),
+                                              F_relu
+                                              )
 
         # This is very similar to above, but instead of combining the partial spectra into a single reconstruction,
         # we take each component separately.
-        reconstructed_spectra_components = tf.einsum('bsc,bc->bsc',
-                                                     tf.einsum('dsc,bd->bsc',
-                                                               tf.exp(self.A),
-                                                               predicted_mass_ratios
-                                                               ),
-                                                     F_relu
-                                                     )
+        if self.constant_vm:
+            reconstructed_spectra_components = tf.einsum(
+                'sc,bc->bsc',
+                 tf.exp(self.A),
+                 F_relu
+             )
+
+        else:
+            reconstructed_spectra_components = tf.einsum(
+                'bsc,bc->bsc',
+                 tf.einsum(
+                     'dsc,bd->bsc',
+                     tf.exp(self.A),
+                     predicted_mass_ratios
+                 ),
+                 F_relu
+             )
+
+
 
         return {'F': F, 'F_relu': F_relu,'reconstructed_spectra': reconstructed_spectra,
                 'predicted_mass_ratios': predicted_mass_ratios,
@@ -235,14 +264,36 @@ class LinearAModel(tf.keras.Model):
         small_x_loss = (tf.reduce_mean(tf.exp(self.x) / (1e-8 + tf.reduce_sum(res['F_relu'], axis=1)))
                         )
 
-        small_linear_loss = my_mean_squared_error(
-            x=tf.tile(tf.reduce_mean(tf.exp(self.A), axis=0, keepdims=True), [self.num_concentrations, 1, 1]),
-            y=tf.exp(self.A))
 
-        small_dA_loss = my_mean_squared_error(x=tf.exp(self.A[:, 1:, :]),
-                                                     y=tf.exp(self.A[:, :-1, :]))
+        if self.constant_vm:
+            small_linear_loss = 0.0
+        else:
+
+            small_linear_loss = my_mean_squared_error(
+                x=tf.tile(tf.reduce_mean(tf.exp(self.A), axis=0, keepdims=True), [self.num_concentrations, 1, 1]),
+                y=tf.exp(self.A))
 
 
+
+        if self.constant_vm:
+            small_dA_loss = (
+                    tf.reduce_mean(tf.square(
+                        tf.exp(self.A[2:, :]) + tf.exp(self.A[:-2, :]) - 2. * tf.exp(self.A[ 1:-1, :]))) +
+                    0.1 * tf.reduce_mean(tf.square(self.X[:, 2:] + self.X[:, :-2] - 2. * self.X[:, 1:-1])))
+
+        else:
+            small_dA_loss = (
+                tf.reduce_mean(tf.square(tf.exp(self.A[:, 2:, :]) + tf.exp(self.A[:, :-2, :])-2.*tf.exp(self.A[:, 1:-1, :]))) +
+                0.1*tf.reduce_mean(tf.square(self.X[:, 2:] + self.X[:, :-2] - 2.*self.X[:, 1:-1])))
+
+
+        '''
+        small_dA_loss = (my_mean_squared_error(x=tf.exp(self.A[:, 1:, :]),
+                                                     y=tf.exp(self.A[:, :-1, :])) +
+                         my_mean_squared_error(x=self.X[:, 1:],
+                                                     y=self.X[:, :-1]))
+
+        '''
         return {
             'reconstruction_loss':reconstruction_loss,
             'prediction_loss':prediction_loss,
@@ -263,7 +314,8 @@ class Trainer():
         self.model = LinearAModel(
             trainable=trainable,
             num_concentrations=self.num_concentrations,
-            num_samples=self.num_samples
+            num_samples=self.num_samples,
+            constant_vm = args['constant_vm']
         )
         if trainable:
             self.optimizer = tf.keras.optimizers.Adam(args['learning_rate'])
@@ -588,7 +640,7 @@ def cross_validation(args):
         )
     )
     supervised_s_test =  res['supervised']['s'][supervised_test_indecies]
-    supervised_m_test =  res['supervised']['m'][supervised_test_indecies],
+    supervised_m_test =  res['supervised']['m'][supervised_test_indecies]
 
 
     unsupervised_train_indecies = unsupervised_list[test_unsupervised_n:]
@@ -651,6 +703,9 @@ def cross_validation(args):
 
         current_step += 1
         if (current_step % args['log_every']) == 0:
+            if current_step == 2000 and loss > 1.:
+                cross_validation(args)
+                return
             print('Step {} loss {}.'.format(current_step, loss))
 
 
@@ -707,6 +762,7 @@ def paper_figures(args):
                 if total_score > 0.4:
                     bad_ids.append(id)
 
+    print(bad_ids)
     data_dict = {}
     for file in all_path_filenames:
         matchObj = re.match(r'Test_data_test_percent_(\d{1,})_id_(\d{1,})_step_(\d{1,})\.file', file['file'])
@@ -742,13 +798,13 @@ def paper_figures(args):
 
             data_40_percent[step] += data_dict[k]
 
-        if step == 20000:
+        if step == 30000:
             if not percent in data_12000_steps.keys():
                 data_12000_steps[percent] = []
 
             data_12000_steps[percent] += data_dict[k]
 
-        if step == 20000 and percent == 30:
+        if step == 30000 and percent == 30:
             data_40_percent_12000_steps += data_dict[k]
 
     # first, we compute the mean prediction error (for each component)
@@ -774,6 +830,7 @@ def paper_figures(args):
                 for d in dat]))
         data_mean.append((percent, step, mean_pred_error, mean_reconstruction_error))
 
+    '''
 
     fig = plt.figure()
     ax = fig.add_subplot(1, 2, 1, projection='3d')
@@ -803,13 +860,15 @@ def paper_figures(args):
     ax.set_zlabel('Average Prediction Error  (%)')
     # ax.set_zticks(1. / 1000. * numpy.array(range(10, 30, 5)))
     plt.show()
+    '''
     # fig.savefig('Test_perf_test_percent_{}_id_{}_step_{}.png'.format(int(100*args['test_ratios']),id, current_step))  # save the figure to file
     # plt.close(fig)
 
     data_mean = []
 
-    for percent in data_12000_steps.keys():
+    for percent in sorted(list(data_12000_steps.keys())):
         dat = data_12000_steps[percent]
+
         mean_pred_error = {'LiPF6':
                                (numpy.mean(
                                    numpy.array([numpy.mean(numpy.abs(d['m'] - d['m_out'])[:, 0]) for d in dat])) /
@@ -834,6 +893,34 @@ def paper_figures(args):
                                    numpy.array([numpy.mean(numpy.abs(d['m'] - d['m_out'])[:, 4]) for d in dat])) /
                                 max_mass_ratios[4]),
                            }
+
+
+
+        std_pred_error = {'LiPF6':
+                               (numpy.std(
+                                   numpy.array([numpy.mean(numpy.abs(d['m'] - d['m_out'])[:, 0]) for d in dat])) /
+                                max_mass_ratios[0]),
+                           'EC':
+                               (numpy.std(
+                                   numpy.array([numpy.mean(numpy.abs(d['m'] - d['m_out'])[:, 1]) for d in dat])) /
+                                max_mass_ratios[1]),
+
+                           'EMC':
+                               (numpy.std(
+                                   numpy.array([numpy.mean(numpy.abs(d['m'] - d['m_out'])[:, 2]) for d in dat])) /
+                                max_mass_ratios[2]),
+
+                           'DMC':
+                               (numpy.std(
+                                   numpy.array([numpy.mean(numpy.abs(d['m'] - d['m_out'])[:, 3]) for d in dat])) /
+                                max_mass_ratios[3]),
+
+                           'DEC':
+                               (numpy.std(
+                                   numpy.array([numpy.mean(numpy.abs(d['m'] - d['m_out'])[:, 4]) for d in dat])) /
+                                max_mass_ratios[4]),
+                           }
+
         mean_reconstruction_error = numpy.mean(
             numpy.array([
                 numpy.mean(
@@ -846,14 +933,32 @@ def paper_figures(args):
                             numpy.maximum(0, d['s'])),
                         axis=1))
                 for d in dat]))
-        data_mean.append((percent, mean_pred_error, mean_reconstruction_error))
+
+
+
+
+        std_reconstruction_error = numpy.std(
+            numpy.array([
+                numpy.mean(
+                    numpy.mean(
+                        numpy.abs(
+                            numpy.maximum(0, d['s']) - d['s_out']),
+                        axis=1) /
+                    numpy.mean(
+                        numpy.abs(
+                            numpy.maximum(0, d['s'])),
+                        axis=1))
+                for d in dat]))
+
+        data_mean.append((percent, mean_pred_error, mean_reconstruction_error, std_pred_error, std_reconstruction_error))
 
 
     fig = plt.figure()
     ax = fig.add_subplot(1, 2, 1)
     ax.set_ylim(0.07 * 100, .20 * 100.)
-    ax.plot(numpy.array([d[0] for d in data_mean]),
-            100. * numpy.array([d[2] for d in data_mean])
+    ax.errorbar(numpy.array([d[0] for d in data_mean]),
+            100. * numpy.array([d[2] for d in data_mean]),
+                yerr = 100. * numpy.array([d[4] for d in data_mean])
             , ms=15, marker='*', c='k')
 
     ax.set_xlabel('Held-out set percentage (%)')
@@ -862,8 +967,10 @@ def paper_figures(args):
     ax = fig.add_subplot(1, 2, 2)
     ax.set_ylim(0.002 * 100., .05 * 100.)
     for bla in ['LiPF6', 'EC', 'EMC', 'DMC', 'DEC']:
-        ax.plot(numpy.array([d[0] for d in data_mean]),
+        ax.errorbar(numpy.array([d[0] for d in data_mean]),
                 100. * numpy.array([d[1][bla] for d in data_mean])
+                ,
+                yerr=100. * numpy.array([d[3][bla] for d in data_mean])
                 , marker='*', ms=15, label=bla)
 
     ax.set_xlabel('Held-out set percentage (%)')
@@ -873,7 +980,7 @@ def paper_figures(args):
 
     data_mean = []
 
-    for percent in data_12000_steps.keys():
+    for percent in sorted(list(data_12000_steps.keys())):
         dat = data_12000_steps[percent]
         mean_pred_errors = numpy.sort(
             numpy.concatenate([numpy.mean(numpy.abs(d['m'] - d['m_out']), axis=1) for d in dat]))
@@ -1229,11 +1336,10 @@ class Command(BaseCommand):
                                                ])
         parser.add_argument('--logdir')
         parser.add_argument('--cross_validation_dir')
-        parser.add_argument('--batch_size', type=int, default=32)
-        parser.add_argument('--virtual_batches', type=int, default=2)
+        parser.add_argument('--batch_size', type=int, default=64)
         parser.add_argument('--learning_rate', type=float, default=5e-3)
         parser.add_argument('--prob_supervised', type=float, default=0.9)
-        parser.add_argument('--total_steps', type=int, default=20000)
+        parser.add_argument('--total_steps', type=int, default=30000)
         parser.add_argument('--checkpoint_every', type=int, default=2000)
         parser.add_argument('--log_every', type=int, default=2000)
         parser.add_argument('--dropout', type=float, default=0.05)
@@ -1245,8 +1351,8 @@ class Command(BaseCommand):
         parser.add_argument('--normalization_coeff', type=float, default=1.)
         parser.add_argument('--positivity_coeff', type=float, default=1.)
         parser.add_argument('--small_x_coeff', type=float, default=.1)
-        parser.add_argument('--small_linear_coeff', type=float, default=.00001)
-        parser.add_argument('--small_dA_coeff', type=float, default=.0001)
+        parser.add_argument('--small_linear_coeff', type=float, default=.0001)
+        parser.add_argument('--small_dA_coeff', type=float, default=.2)
         parser.add_argument('--global_norm_clip', type=float, default=10.)
         parser.add_argument('--seed', type=int, default=0)
         parser.add_argument('--datasets_file', default='compiled_datasets.file')
@@ -1258,6 +1364,11 @@ class Command(BaseCommand):
         parser.add_argument('--visuals', dest='visuals', action='store_true')
         parser.add_argument('--no-visuals', dest='visuals', action='store_false')
         parser.set_defaults(visuals=False)
+
+
+        parser.add_argument('--constant_vm', dest='constant_vm', action='store_true')
+        parser.add_argument('--no_constant_vm', dest='constant_vm', action='store_false')
+        parser.set_defaults(constant_vm=False)
 
     def handle(self, *args, **options):
 
