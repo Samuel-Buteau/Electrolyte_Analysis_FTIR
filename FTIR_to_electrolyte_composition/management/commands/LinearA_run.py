@@ -695,6 +695,14 @@ def cross_validation(args):
                     's': supervised_s_test,
                     's_out': s_out.numpy()}, f, pickle.HIGHEST_PROTOCOL)
 
+            with open(os.path.join(args['cross_validation_dir'],
+                                   'Test_model_test_percent_{}_id_{}_step_{}.file'.format(
+                                           int(100 * args['test_ratios']), id, current_step)), 'wb') as f:
+                pickle.dump({
+                    'A': trainer.model.A.numpy(),
+                    'X': trainer.model.X.numpy(),
+                    'x': trainer.model.x.numpy(),
+                    }, f, pickle.HIGHEST_PROTOCOL)
 
             if current_step >= args['total_steps']:
                 break
