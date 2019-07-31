@@ -737,10 +737,16 @@ def paper_figures(args):
 
     all_path_filenames = []
 
+    all_path_filenames_model = []
+
     for root, dirs, filenames in os.walk(os.path.join('.', args['cross_validation_dir'])):
         for file in filenames:
             if file.endswith('.file'):
-                all_path_filenames.append({'root': root, 'file': file})
+                if file.contains('Test_data_test_'):
+                    all_path_filenames.append({'root': root, 'file': file})
+                elif file.contains('Test_model_test_'):
+                    all_path_filenames_model.append({'root': root, 'file': file})
+
 
     bad_ids = []
     for file in all_path_filenames:
@@ -792,10 +798,35 @@ def paper_figures(args):
 
                 data_dict[k].append(dat)
 
+    model_dict = {}
+    for file in all_path_filenames_model:
+        matchObj = re.match(r'Test_model_test_percent_(\d{1,})_id_(\d{1,})_step_(\d{1,})\.file', file['file'])
+        if matchObj:
+            percent = int(matchObj.group(1))
+            step = int(matchObj.group(3))
+            id = int(matchObj.group(2))
+            if id in bad_ids:
+                continue
+
+            with open(os.path.join(file['root'], file['file']),
+                      'rb') as f:
+                dat = pickle.load(f)
+                k = (percent, step)
+                if step == 0:
+                    continue
+                if not k in model_dict.keys():
+                    model_dict[k] = []
+
+                model_dict[k].append(dat)
+
+
+
     data_40_percent = {}
     data_12000_steps = {}
 
     data_40_percent_12000_steps = []
+
+    model_instances = []
 
     for k in data_dict.keys():
         percent, step = k
@@ -814,6 +845,7 @@ def paper_figures(args):
 
         if step == 30000 and percent == 30:
             data_40_percent_12000_steps += data_dict[k]
+            model_instances += model_dict[k]
 
     # first, we compute the mean prediction error (for each component)
     # and mean reconstruction error, and plot them in 2D for all steps and percent.
@@ -1157,6 +1189,108 @@ def paper_figures(args):
             ax.legend()
     plt.show()
 
+
+
+    # Internals
+    A = numpy.exp(numpy.concatenate([d['A'] for d in model_instances], axis=0))
+    X = numpy.concatenate([numpy.exp(d['x'])*d['X'] for d in model_instances], axis=0)
+
+
+    A_mean = numpy.mean(A, axis=0)
+    A_std = numpy.std(A, axis=0)
+    X_mean = numpy.mean(X, axis=0)
+    X_std = numpy.std(X, axis=0)
+
+
+    # deal with X
+    fig = plt.figure()
+    limits = [[750, 900], [900, 1500], [1650, 1850]]
+    for j in range(3):
+        ax = fig.add_subplot(3, 1, j + 1)
+        my_max = numpy.max(X_mean)
+        my_min = numpy.min(X_mean)
+        colors = ['k', 'r', 'b', 'g', 'c']
+        labels = ['LiPF6', 'EC', 'EMC', 'DMC','DEC']
+        for i in range(5):
+            ax.errorbar(wanted_wavenumbers[:len(X_mean[0])], X_mean[i, :],
+                        yerr=X_std[i,:],
+                    c=colors[i], label=labels[i])
+
+        ax.set_xlabel('Wavenumber')
+        ax.set_ylabel('no units')
+        ax.set_xlim(limits[j][0], limits[j][1])
+        ax.set_ylim(my_min, my_max)
+        if j == 0:
+            ax.legend()
+    plt.show()
+
+    # deal with A
+    if args['constant_vm']:
+        fig = plt.figure()
+        limits = [[750, 900], [900, 1500], [1650, 1850]]
+        for j in range(3):
+            ax = fig.add_subplot(3, 1, j + 1)
+            my_max = numpy.max(A_mean)
+            my_min = numpy.min(A_mean)
+            colors = ['k', 'r', 'b', 'g', 'c']
+            labels = ['LiPF6', 'EC', 'EMC', 'DMC', 'DEC']
+            for i in range(5):
+                ax.errorbar(wanted_wavenumbers[:len(A_mean)], A_mean[:, i],
+                            yerr=A_std[:, i],
+                            c=colors[i], label=labels[i])
+
+            ax.set_xlabel('Wavenumber')
+            ax.set_ylabel('no units')
+            ax.set_xlim(limits[j][0], limits[j][1])
+            ax.set_ylim(my_min, my_max)
+            if j == 0:
+                ax.legend()
+        plt.show()
+
+    else:
+        for k in range(5):
+            fig = plt.figure()
+            limits = [[750, 900], [900, 1500], [1650, 1850]]
+            for j in range(3):
+                ax = fig.add_subplot(3, 1, j + 1)
+                my_max = numpy.max(A_mean[k])
+                my_min = numpy.min(A_mean[k])
+                colors = ['k', 'r', 'b', 'g', 'c']
+                labels = ['LiPF6', 'EC', 'EMC', 'DMC', 'DEC']
+                for i in range(5):
+                    ax.errorbar(wanted_wavenumbers[:len(A_mean[k])], A_mean[k,:, i],
+                                yerr=A_std[k,:, i],
+                                c=colors[i], label=labels[i])
+
+                ax.set_xlabel('Wavenumber')
+                ax.set_ylabel('no units')
+                ax.set_xlim(limits[j][0], limits[j][1])
+                ax.set_ylim(my_min, my_max)
+                if j == 0:
+                    ax.legend()
+            plt.show()
+
+    #TODO: make the plots in the case where constant_vm is false.
+
+    fig = plt.figure()
+    limits = [[750, 900], [900, 1500], [1650, 1850]]
+    for j in range(3):
+        ax = fig.add_subplot(3, 1, j + 1)
+        my_max = numpy.max(signal_s)
+        my_min = 0.
+
+        ax.scatter(wanted_wavenumbers[:len(signal_s)], signal_s,
+                   c='k', s=10, label='Mean Absorbance across dataset')
+        ax.plot(wanted_wavenumbers[:len(error_s)], error_s,
+                c='r', label='Mean Absolute Error across dataset')
+
+        ax.set_xlabel('Wavenumber')
+        ax.set_ylabel('Absorbance (abu)')
+        ax.set_xlim(limits[j][0], limits[j][1])
+        ax.set_ylim(my_min, my_max)
+        if j == 0:
+            ax.legend()
+    plt.show()
 
 
 
