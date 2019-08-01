@@ -124,12 +124,20 @@ class LinearAModel(tf.keras.Model):
             # This goes from concentrations to spectrum
             self.A = self.add_variable(
                 name='A',
-                shape=[num_concentrations, num_samples, num_concentrations],
+                shape=[num_samples, num_concentrations, num_concentrations],
                 dtype=tf.float32,
                 initializer=tf.initializers.orthogonal(),
                 trainable=trainable,
             )
 
+    def get_A(self):
+        if self.constant_vm:
+            return tf.exp(self.A)
+        else:
+            A = tf.linalg.band_part(self.A, 0, -1)
+            A = A + tf.transpose(A, perm=(0, 2, 1))
+            A = tf.exp(A)
+            return A
 
     def call(self, input_spectra, training=False):
         """
@@ -178,9 +186,10 @@ class LinearAModel(tf.keras.Model):
                 F_relu
             )
         else:
+
             reconstructed_spectra = tf.einsum('bsc,bc->bs',
-                                              tf.einsum('dsc,bd->bsc',
-                                                        tf.exp(self.A),
+                                              tf.einsum('sdc,bd->bsc',
+                                                        self.get_A(),
                                                         predicted_mass_ratios
                                                         ),
                                               F_relu
@@ -196,11 +205,12 @@ class LinearAModel(tf.keras.Model):
              )
 
         else:
+
             reconstructed_spectra_components = tf.einsum(
                 'bsc,bc->bsc',
                  tf.einsum(
-                     'dsc,bd->bsc',
-                     tf.exp(self.A),
+                     'sdc,bd->bsc',
+                     self.get_A(),
                      predicted_mass_ratios
                  ),
                  F_relu
@@ -257,7 +267,7 @@ class LinearAModel(tf.keras.Model):
 
         positivity_loss = tf.reduce_mean(tf.nn.relu(-res['F']))
 
-        normalization_loss = (tf.square(tf.reduce_mean(tf.exp(2. * self.A)) - 1.) +
+        normalization_loss = (tf.square(tf.reduce_mean(tf.square(self.get_A())) - 1.) +
                               tf.square(tf.reduce_mean(tf.square(self.X)) - 1.))
 
         # We try to make x small while keeping the output big. This should force x to focus on large signals in S.
@@ -270,8 +280,8 @@ class LinearAModel(tf.keras.Model):
         else:
 
             small_linear_loss = my_mean_squared_error(
-                x=tf.tile(tf.reduce_mean(tf.exp(self.A), axis=0, keepdims=True), [self.num_concentrations, 1, 1]),
-                y=tf.exp(self.A))
+                x=tf.tile(tf.reduce_mean(self.get_A(), axis=1, keepdims=True), [1,self.num_concentrations, 1]),
+                y=self.get_A())
 
 
 
@@ -282,8 +292,9 @@ class LinearAModel(tf.keras.Model):
                     0.1 * tf.reduce_mean(tf.square(self.X[:, 2:] + self.X[:, :-2] - 2. * self.X[:, 1:-1])))
 
         else:
+            A = self.get_A()
             small_dA_loss = (
-                tf.reduce_mean(tf.square(tf.exp(self.A[:, 2:, :]) + tf.exp(self.A[:, :-2, :])-2.*tf.exp(self.A[:, 1:-1, :]))) +
+                tf.reduce_mean(tf.square(A[2:,:, :] +A[:-2,:, :] -2.*A[1:-1,:,:] )) +
                 0.1*tf.reduce_mean(tf.square(self.X[:, 2:] + self.X[:, :-2] - 2.*self.X[:, 1:-1])))
 
 
@@ -699,7 +710,7 @@ def cross_validation(args):
                                    'Test_model_test_percent_{}_id_{}_step_{}.file'.format(
                                            int(100 * args['test_ratios']), id, current_step)), 'wb') as f:
                 pickle.dump({
-                    'A': trainer.model.A.numpy(),
+                    'A': trainer.model.get_A().numpy(),
                     'X': trainer.model.X.numpy(),
                     'x': trainer.model.x.numpy(),
                     }, f, pickle.HIGHEST_PROTOCOL)
@@ -742,9 +753,9 @@ def paper_figures(args):
     for root, dirs, filenames in os.walk(os.path.join('.', args['cross_validation_dir'])):
         for file in filenames:
             if file.endswith('.file'):
-                if file.contains('Test_data_test_'):
+                if ('Test_data_test_') in file:
                     all_path_filenames.append({'root': root, 'file': file})
-                elif file.contains('Test_model_test_'):
+                elif ('Test_model_test_') in file:
                     all_path_filenames_model.append({'root': root, 'file': file})
 
 
@@ -1192,12 +1203,13 @@ def paper_figures(args):
 
 
     # Internals
-    A = numpy.exp(numpy.concatenate([d['A'] for d in model_instances], axis=0))
-    X = numpy.concatenate([numpy.exp(d['x'])*d['X'] for d in model_instances], axis=0)
+
+    A = numpy.stack([d['A'] for d in model_instances], axis=0)
+    X = numpy.stack([numpy.exp(d['x'][0])*d['X'] for d in model_instances], axis=0)
 
 
-    A_mean = numpy.mean(A, axis=0)
-    A_std = numpy.std(A, axis=0)
+
+
     X_mean = numpy.mean(X, axis=0)
     X_std = numpy.std(X, axis=0)
 
@@ -1226,6 +1238,8 @@ def paper_figures(args):
 
     # deal with A
     if args['constant_vm']:
+        A_mean = numpy.mean(A, axis=0)
+        A_std = numpy.std(A, axis=0)
         fig = plt.figure()
         limits = [[750, 900], [900, 1500], [1650, 1850]]
         for j in range(3):
@@ -1248,19 +1262,23 @@ def paper_figures(args):
         plt.show()
 
     else:
+        A_mean = numpy.mean(A , axis=0)
+        A_std = numpy.std(A, axis=0)
+        fig = plt.figure()
+
         for k in range(5):
-            fig = plt.figure()
+
             limits = [[750, 900], [900, 1500], [1650, 1850]]
             for j in range(3):
-                ax = fig.add_subplot(3, 1, j + 1)
-                my_max = numpy.max(A_mean[k])
-                my_min = numpy.min(A_mean[k])
+                ax = fig.add_subplot(5, 3, 3*k+ j + 1)
+                my_max = numpy.max(A_mean[:,k])
+                my_min = numpy.min(A_mean[:,k])
                 colors = ['k', 'r', 'b', 'g', 'c']
                 labels = ['LiPF6', 'EC', 'EMC', 'DMC', 'DEC']
-                for i in range(5):
-                    ax.errorbar(wanted_wavenumbers[:len(A_mean[k])], A_mean[k,:, i],
-                                yerr=A_std[k,:, i],
-                                c=colors[i], label=labels[i])
+                for i in range(k, 5):
+                    ax.errorbar(wanted_wavenumbers[:len(A_mean)], A_mean[:,k, i],
+                                yerr=A_std[:, k,i],
+                                c=colors[i], label="("+labels[k] +", " + labels[i]+")")
 
                 ax.set_xlabel('Wavenumber')
                 ax.set_ylabel('no units')
@@ -1268,31 +1286,7 @@ def paper_figures(args):
                 ax.set_ylim(my_min, my_max)
                 if j == 0:
                     ax.legend()
-            plt.show()
-
-    #TODO: make the plots in the case where constant_vm is false.
-
-    fig = plt.figure()
-    limits = [[750, 900], [900, 1500], [1650, 1850]]
-    for j in range(3):
-        ax = fig.add_subplot(3, 1, j + 1)
-        my_max = numpy.max(signal_s)
-        my_min = 0.
-
-        ax.scatter(wanted_wavenumbers[:len(signal_s)], signal_s,
-                   c='k', s=10, label='Mean Absorbance across dataset')
-        ax.plot(wanted_wavenumbers[:len(error_s)], error_s,
-                c='r', label='Mean Absolute Error across dataset')
-
-        ax.set_xlabel('Wavenumber')
-        ax.set_ylabel('Absorbance (abu)')
-        ax.set_xlim(limits[j][0], limits[j][1])
-        ax.set_ylim(my_min, my_max)
-        if j == 0:
-            ax.legend()
-    plt.show()
-
-
+        plt.show()
 
 
 def ImportDirect(file, num_samples):
@@ -1480,7 +1474,7 @@ class Command(BaseCommand):
         parser.add_argument('--cross_validation_dir')
         parser.add_argument('--batch_size', type=int, default=64)
         parser.add_argument('--learning_rate', type=float, default=5e-3)
-        parser.add_argument('--prob_supervised', type=float, default=0.9)
+        parser.add_argument('--prob_supervised', type=float, default=0.8)
         parser.add_argument('--total_steps', type=int, default=30000)
         parser.add_argument('--checkpoint_every', type=int, default=2000)
         parser.add_argument('--log_every', type=int, default=2000)
