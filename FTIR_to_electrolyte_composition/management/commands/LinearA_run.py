@@ -339,7 +339,7 @@ class Trainer():
                 self.ckpt = tf.train.Checkpoint(net=self.model)
         if checkpointing:
             self.manager = tf.train.CheckpointManager(self.ckpt, args['logdir'], max_to_keep=3)
-            self.ckpt.restore(self.manager.latest_checkpoint)
+            self.ckpt.restore(self.manager.latest_checkpoint).expect_partial()
             if self.manager.latest_checkpoint:
                 print("Restored from {}".format(self.manager.latest_checkpoint))
             else:
@@ -507,9 +507,13 @@ def train_on_all_data(args):
         trainer.ckpt.step.assign_add(1)
         current_step = int(trainer.ckpt.step)
         if (current_step % args['log_every']) == 0:
+            if current_step == 2000 and loss > 1.:
+                train_on_all_data(args)
+                return
+
             print('Step {} loss {}.'.format(current_step,loss))
 
-        if (current_step % args['checkpoint_every']) == 0:
+        if (current_step % args['checkpoint_every']) == 0 and current_step != 0:
             save_path = trainer.manager.save()
             print("Saved checkpoint for step {}: {}".format(current_step, save_path))
 
@@ -547,7 +551,7 @@ def run_on_all_data(args):
 
     for index in range(len(res['supervised']['f'])):
 
-        fig = plt.figure(figsize=(16, 4))
+        fig = plt.figure(figsize=(16, 2))
         ax = fig.add_subplot(111)
         partials = range(0, len(res['supervised']['s'][index]), 8)
 
@@ -1385,7 +1389,7 @@ def run_on_directory(args):
         filename_output = f[index]
         filename_output = filename_output.split('.asp')[0].replace('\\', '__').replace('/', '__')
 
-        fig = plt.figure(figsize=(16, 9))
+        fig = plt.figure(figsize=(16, 4))
         ax = fig.add_subplot(111)
         partials = range(0, len(s[index]), 8)
 
@@ -1409,7 +1413,7 @@ def run_on_directory(args):
         fig.savefig(os.path.join('.', args['output_dir'], filename_output + '_RECONSTRUCTION_COMPONENTS.png'))
         plt.close(fig)
 
-        fig = plt.figure(figsize=(16, 9))
+        fig = plt.figure(figsize=(16, 4))
         ax = fig.add_subplot(111)
         partials = range(0, len(s[index]))
 
