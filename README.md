@@ -1,4 +1,4 @@
-Note: do not use this branch. Always use the master branch!!!
+
 # Locations
 ## Folders
 - LinearA_trained contains a pretrained model. 
@@ -62,7 +62,7 @@ will produce the figures from the paper for the cross validation runs stored in 
 
 # Requirements
 see requirements.txt
-install the requirements by running on the command line "pip install <something>" with <something substituted for a requirement.
+install the requirements by running on the command line "pip install -r requirements.txt"
 
 
 
