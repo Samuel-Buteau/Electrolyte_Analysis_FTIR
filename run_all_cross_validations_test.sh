@@ -1,0 +1,2 @@
+sh run_cross_validations_test.sh
+sh run_cross_validations_constant_test.sh
