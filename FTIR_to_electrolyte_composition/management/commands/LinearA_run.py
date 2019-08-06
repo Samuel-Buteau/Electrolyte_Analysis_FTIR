@@ -349,34 +349,12 @@ class Trainer():
 
     @tf.function
     def train_step(self, s, m, z, batch_size):
-        pos_spectra = tf.nn.relu(tf.expand_dims(s, axis=2))
-        average_absorbance = tf.reduce_mean(pos_spectra, axis=[0, 1, 2])
-
-        noised_spectra = tf.nn.relu(
-            pos_spectra +
-            tf.random.normal(
-                shape=[batch_size, self.num_samples, 1],
-                mean=0.,
-                stddev=average_absorbance * self.args['noise_level'],
-            dtype=tf.float32))
-
-        num_filter_d = tf.random.uniform(shape=[1], minval=2, maxval=5, dtype=tf.int32)[0]
-        temperature = 1e-8 + tf.exp(
-            tf.random.uniform(shape=[1], minval=-2., maxval=self.args['largest_temp_exp'], dtype=tf.float32))
-        filter1 = tf.reshape(tf.nn.softmax(
-            -tf.abs(tf.cast(tf.range(
-                start=-num_filter_d,
-                limit=num_filter_d + 1,
-                dtype=tf.int32), tf.float32)) / temperature),
-            [2 * num_filter_d + 1, 1, 1])
-
-        # This is a modified version of the spectrum which incorporates noise and smoothing.
-        augmented_spectra = tf.nn.conv1d(noised_spectra, filter1, stride=1, padding="SAME")[:, :, 0]
+        pos_spectra = tf.nn.relu(s)
 
         with tf.GradientTape() as tape:
             losses = \
                 self.model.get_losses(
-                    input_spectra=augmented_spectra,
+                    input_spectra=pos_spectra,
                     input_mass_ratios=m,
                     input_z_supervised=z,
                 )
