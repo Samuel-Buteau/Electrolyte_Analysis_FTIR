@@ -1458,8 +1458,11 @@ def run_on_directory(args):
         filename_output = f[index]
         filename_output = filename_output.split('.asp')[0].replace('\\', '__').replace('/', '__')
 
-        fig = plt.figure(figsize=(16, 4))
+        fig = plt.figure(figsize=(9, 2.5))
         ax = fig.add_subplot(111)
+        for axis in ['top', 'bottom', 'left', 'right']:
+            ax.spines[axis].set_linewidth(3.)
+
         partials = range(0, len(s[index]), 8)
 
         ax.scatter(wanted_wavenumbers[partials], s[index][partials], c='k', s=100,
@@ -1475,9 +1478,22 @@ def run_on_directory(args):
                     label='Predicted: {:1.3f} (kg/kg) [{}]'.format(m_out[index, comp], comps[comp]))
 
         ax.legend()
-        ax.set_xlabel('Wavenumber (cm^-1)')
         ax.set_xlim(700, 1900)
-        ax.set_ylabel('Absorbance (abu)')
+        ax.set_ylim(bottom=0.)
+
+        if args['labels']:
+            ax.set_xlabel('Wavenumber (cm^-1)')
+            ax.set_ylabel('Absorbance (abu)')
+
+        ax.xaxis.set_minor_locator(MultipleLocator(200))
+        ax.xaxis.set_major_locator(MultipleLocator(400))
+        ax.yaxis.set_minor_locator(MultipleLocator(.1))
+        ax.yaxis.set_major_locator(MultipleLocator(.2))
+
+        ax.tick_params(direction='in', length=10, width=2, labelsize=11, bottom=True, top=True, left=True,
+                       right=True)
+        ax.tick_params(which='minor', direction='in', length=6, width=2, bottom=True, top=True, left=True,
+                       right=True)
 
         fig.savefig(os.path.join('.', args['output_dir'], filename_output + '_RECONSTRUCTION_COMPONENTS.png'))
         plt.close(fig)
