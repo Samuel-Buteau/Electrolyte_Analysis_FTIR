@@ -6,7 +6,10 @@ import pickle
 import random
 
 import copy
+from matplotlib.ticker import (MultipleLocator, FormatStrFormatter,
+                               AutoMinorLocator)
 import matplotlib.pyplot as plt
+
 import numpy
 import tensorflow as tf
 from django.core.management.base import BaseCommand
@@ -988,16 +991,29 @@ def paper_figures(args):
 
     fig = plt.figure()
     ax = fig.add_subplot(1, 2, 1)
+    for axis in ['top', 'bottom', 'left', 'right']:
+        ax.spines[axis].set_linewidth(3.)
+
     ax.set_ylim(0.07 * 100, .20 * 100.)
     ax.errorbar(numpy.array([d[0] for d in data_mean]),
             100. * numpy.array([d[2] for d in data_mean]),
                 yerr = 100. * numpy.array([d[4] for d in data_mean])
             , ms=15, marker='*', c='k')
 
-    ax.set_xlabel('Held-out set percentage (%)')
-    ax.set_ylabel('Relative Reconstruction Error (%)')
+    if args['labels']:
+        ax.set_xlabel('Held-out set percentage (%)')
+        ax.set_ylabel('Relative Reconstruction Error (%)')
+
+    ax.xaxis.set_minor_locator(MultipleLocator(10))
+    ax.xaxis.set_major_locator(MultipleLocator(20))
+    ax.yaxis.set_minor_locator(MultipleLocator(2))
+    ax.yaxis.set_major_locator(MultipleLocator(4))
+    ax.tick_params(direction='in', length=7, width=2, labelsize=11, bottom=True, top=True, left=True, right=True)
+    ax.tick_params(which='minor', direction='in', length=4, width=2, bottom=True, top=True, left=True, right=True)
 
     ax = fig.add_subplot(1, 2, 2)
+    for axis in ['top', 'bottom', 'left', 'right']:
+        ax.spines[axis].set_linewidth(3.)
     ax.set_ylim(0.002 * 100., .05 * 100.)
     for bla in ['LiPF6', 'EC', 'EMC', 'DMC', 'DEC']:
         ax.errorbar(numpy.array([d[0] for d in data_mean]),
@@ -1006,9 +1022,21 @@ def paper_figures(args):
                 yerr=100. * numpy.array([d[3][bla] for d in data_mean])
                 , marker='*', ms=15, label=bla)
 
-    ax.set_xlabel('Held-out set percentage (%)')
-    ax.set_ylabel('Relative Prediction Error  (%)')
+    if args['labels']:
+        ax.set_xlabel('Held-out set percentage (%)')
+        ax.set_ylabel('Relative Prediction Error  (%)')
+
+    ax.xaxis.set_minor_locator(MultipleLocator(10))
+    ax.xaxis.set_major_locator(MultipleLocator(20))
+    ax.yaxis.set_minor_locator(MultipleLocator(0.5))
+    ax.yaxis.set_major_locator(MultipleLocator(1))
+    ax.tick_params(direction='in', length=7, width=2, labelsize=11, bottom=True, top=True, left=True, right=True,labelbottom=True,labeltop=False, labelleft=False, labelright=True)
+    ax.tick_params(which='minor', direction='in', length=4, width=2, bottom=True, top=True, left=True, right=True)
+
     ax.legend()
+
+    plt.subplots_adjust(wspace=0.08)
+
     plt.show()
 
     data_mean = []
@@ -1028,27 +1056,6 @@ def paper_figures(args):
         data_mean.append((percent, mean_pred_errors, mean_reconstruction_errors, numpy.array(
             [100. * (1. - (i / len(mean_pred_errors))) for i in range(len(mean_pred_errors))])))
 
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 2, 1)
-    for percent, mean_pred_errors, mean_reconstruction_errors, percentiles in reversed(data_mean):
-        ax.plot(percentiles, mean_reconstruction_errors,
-                c='{:1.3f}'.format(1. - (percent / 100.)),
-                label='{}% held-out'.format(percent))
-
-    ax.legend()
-    ax.set_xlabel('Percentile over 24 trials (%)')
-    ax.set_ylabel('Relative Average Reconstruction Error (abu/abu)')
-
-    ax = fig.add_subplot(1, 2, 2)
-    for percent, mean_pred_errors, mean_reconstruction_errors, percentiles in reversed(data_mean):
-        ax.plot(percentiles, mean_pred_errors,
-                c='{:1.3f}'.format(1. - (percent / 100.)),
-                label='{}% held-out'.format(percent))
-
-    ax.set_xlabel('Percentile over 24 trials (%)')
-    ax.set_ylabel('Average Prediction Error  (kg/kg)')
-    ax.set_ylim(0.002, 0.1)
-    plt.show()
 
     data_mean = {}
 
@@ -1062,7 +1069,8 @@ def paper_figures(args):
 
     fig = plt.figure()
     ax = fig.add_subplot(1, 3, 1)
-
+    for axis in ['top', 'bottom', 'left', 'right']:
+        ax.spines[axis].set_linewidth(3.)
     for k in ['LiPF6']:
         pred, true = data_mean[k]
         ax.plot(true, true,
@@ -1071,11 +1079,25 @@ def paper_figures(args):
                    c=colors[k],
                    label=k)
 
-    ax.set_xlabel('Actual Mass Ratio (kg/kg)')
-    ax.set_ylabel('Predicted Mass Ratio (kg/kg)')
+
+
+    if args['labels']:
+        ax.set_xlabel('Actual Mass Ratio (kg/kg)')
+        ax.set_ylabel('Predicted Mass Ratio (kg/kg)')
+
+    ax.xaxis.set_minor_locator(MultipleLocator(.05))
+    ax.xaxis.set_major_locator(MultipleLocator(.1))
+    ax.yaxis.set_minor_locator(MultipleLocator(.05))
+    ax.yaxis.set_major_locator(MultipleLocator(.1))
+    ax.tick_params(direction='in', length=7, width=2, labelsize=11, bottom=True, top=True, left=True, right=True)
+    ax.tick_params(which='minor', direction='in', length=4, width=2, bottom=True, top=True, left=True, right=True)
+
+
+
     ax.legend()
     ax = fig.add_subplot(1, 3, 2)
-
+    for axis in ['top', 'bottom', 'left', 'right']:
+        ax.spines[axis].set_linewidth(3.)
     for k in ['EC']:
         pred, true = data_mean[k]
         ax.plot(true, true,
@@ -1084,11 +1106,22 @@ def paper_figures(args):
                    c=colors[k],
                    label=k)
 
-    ax.set_xlabel('Actual Mass Ratio (kg/kg)')
-    ax.set_ylabel('Predicted Mass Ratio (kg/kg)')
+    if args['labels']:
+        ax.set_xlabel('Actual Mass Ratio (kg/kg)')
+        ax.set_ylabel('Predicted Mass Ratio (kg/kg)')
+
+    ax.xaxis.set_minor_locator(MultipleLocator(.1))
+    ax.xaxis.set_major_locator(MultipleLocator(.2))
+    ax.yaxis.set_minor_locator(MultipleLocator(.1))
+    ax.yaxis.set_major_locator(MultipleLocator(.2))
+    ax.tick_params(direction='in', length=7, width=2, labelsize=11, bottom=True, top=True, left=True, right=True)
+    ax.tick_params(which='minor', direction='in', length=4, width=2, bottom=True, top=True, left=True, right=True)
+
+
     ax.legend()
     ax = fig.add_subplot(1, 3, 3)
-
+    for axis in ['top', 'bottom', 'left', 'right']:
+        ax.spines[axis].set_linewidth(3.)
     for k in ['EMC', 'DMC', 'DEC']:
         pred, true = data_mean[k]
         ax.plot(true, true,
@@ -1097,8 +1130,18 @@ def paper_figures(args):
                    c=colors[k],
                    label=k)
 
-    ax.set_xlabel('Actual Mass Ratio (kg/kg)')
-    ax.set_ylabel('Predicted Mass Ratio (kg/kg)')
+    if args['labels']:
+        ax.set_xlabel('Actual Mass Ratio (kg/kg)')
+        ax.set_ylabel('Predicted Mass Ratio (kg/kg)')
+
+    ax.xaxis.set_minor_locator(MultipleLocator(.2))
+    ax.xaxis.set_major_locator(MultipleLocator(.4))
+    ax.yaxis.set_minor_locator(MultipleLocator(.2))
+    ax.yaxis.set_major_locator(MultipleLocator(.4))
+    ax.tick_params(direction='in', length=7, width=2, labelsize=11, bottom=True, top=True, left=True, right=True)
+    ax.tick_params(which='minor', direction='in', length=4, width=2, bottom=True, top=True, left=True, right=True)
+
+
     ax.legend()
 
     plt.show()
@@ -1112,6 +1155,7 @@ def paper_figures(args):
     pred_s = numpy.concatenate([d['s_out'] for d in dat], axis=0)
     true_s = numpy.concatenate([d['s'] for d in dat], axis=0)
 
+    '''
     sorted_indecies = numpy.argsort(
         numpy.mean(numpy.abs(pred_s - numpy.maximum(0, true_s)), axis=1) / numpy.mean(numpy.maximum(0, true_s), axis=1))
     num = len(pred_s)
@@ -1148,7 +1192,7 @@ def paper_figures(args):
             if j == 0:
                 ax.legend()
         plt.show()
-
+    '''
     pred_s = numpy.concatenate([d['s_out'] for d in dat], axis=0)
     true_s = numpy.concatenate([d['s'] for d in dat], axis=0)
 
@@ -1164,20 +1208,36 @@ def paper_figures(args):
 
     fig = plt.figure()
     limits = [[750, 900], [900, 1500], [1650, 1850]]
+    tics = [[20, 40], [50,100], [25,50]]
     for j in range(3):
         ax = fig.add_subplot(3, 1, j + 1)
+        for axis in ['top', 'left', 'right']:
+            ax.spines[axis].set_linewidth(3.)
+        for axis in ['bottom']:
+            ax.spines[axis].set_linewidth(2.)
+
         my_max = numpy.max(signal_s)
         my_min = 0.
 
         ax.scatter(wanted_wavenumbers[:len(signal_s)], signal_s,
                    c='k', s=10, label='Mean Absorbance across dataset')
         ax.plot(wanted_wavenumbers[:len(error_s)], error_s,
-                c='r', label='Mean Absolute Error across dataset')
+                c='r', linewidth=3. , label='Mean Absolute Error across dataset')
 
-        ax.set_xlabel('Wavenumber')
-        ax.set_ylabel('Absorbance (abu)')
+        if args['labels']:
+            ax.set_xlabel('Wavenumber')
+            ax.set_ylabel('Absorbance (abu)')
+
         ax.set_xlim(limits[j][0], limits[j][1])
         ax.set_ylim(my_min, my_max)
+
+        ax.xaxis.set_minor_locator(MultipleLocator(tics[j][0]))
+        ax.xaxis.set_major_locator(MultipleLocator(tics[j][1]))
+        ax.yaxis.set_minor_locator(MultipleLocator(.05))
+        ax.yaxis.set_major_locator(MultipleLocator(.1))
+        ax.tick_params(direction='in', length=7, width=2, labelsize=11, bottom=True, top=True, left=True, right=True)
+        ax.tick_params(which='minor', direction='in', length=4, width=2, bottom=True, top=True, left=True, right=True)
+
         if j == 0:
             ax.legend()
     plt.show()
@@ -1198,9 +1258,12 @@ def paper_figures(args):
 
     # deal with X
     fig = plt.figure()
-    limits = [[750, 900], [900, 1500], [1650, 1850]]
+
     for j in range(3):
         ax = fig.add_subplot(3, 1, j + 1)
+        for axis in ['top', 'bottom', 'left', 'right']:
+            ax.spines[axis].set_linewidth(3.)
+
         my_max = numpy.max(X_mean)
         my_min = numpy.min(X_mean)
         colors = ['k', 'r', 'b', 'g', 'c']
@@ -1210,11 +1273,19 @@ def paper_figures(args):
                         yerr=X_std[i,:],
                     c=colors[i], label=labels[i])
 
-        ax.set_xlabel('Wavenumber')
-        ax.set_ylabel('no units')
+        if args['labels']:
+            ax.set_xlabel('Wavenumber')
+            ax.set_ylabel('no units')
         ax.set_xlim(limits[j][0], limits[j][1])
         ax.set_ylim(my_min, my_max)
-        if j == 0:
+
+        ax.xaxis.set_minor_locator(MultipleLocator(tics[j][0]))
+        ax.xaxis.set_major_locator(MultipleLocator(tics[j][1]))
+        ax.yaxis.set_minor_locator(MultipleLocator(.01))
+        ax.yaxis.set_major_locator(MultipleLocator(.02))
+        ax.tick_params(direction='in', length=7, width=2, labelsize=11, bottom=True, top=True, left=True, right=True)
+        ax.tick_params(which='minor', direction='in', length=4, width=2, bottom=True, top=True, left=True, right=True)
+        if j == 2:
             ax.legend()
     plt.show()
 
@@ -1246,13 +1317,18 @@ def paper_figures(args):
     else:
         A_mean = numpy.mean(A , axis=0)
         A_std = numpy.std(A, axis=0)
-        fig = plt.figure()
+
+        fig, axs = plt.subplots(5, 3, sharey='row', sharex='col')
 
         for k in range(5):
 
             limits = [[750, 900], [900, 1500], [1650, 1850]]
+            tics = [[50, 100], [150, 300], [50, 100]]
             for j in range(3):
-                ax = fig.add_subplot(5, 3, 3*k+ j + 1)
+                ax = axs[k,j]
+                for axis in ['top', 'bottom', 'left', 'right']:
+                    ax.spines[axis].set_linewidth(2.)
+
                 my_max = numpy.max(A_mean[:,k])
                 my_min = numpy.min(A_mean[:,k])
                 colors = ['k', 'r', 'b', 'g', 'c']
@@ -1262,12 +1338,27 @@ def paper_figures(args):
                                 yerr=A_std[:, k,i],
                                 c=colors[i], label="("+labels[k] +", " + labels[i]+")")
 
-                ax.set_xlabel('Wavenumber')
-                ax.set_ylabel('no units')
+                if args['labels']:
+                    ax.set_xlabel('Wavenumber')
+                    ax.set_ylabel('no units')
                 ax.set_xlim(limits[j][0], limits[j][1])
                 ax.set_ylim(my_min, my_max)
-                if j == 0:
+                ax.xaxis.set_minor_locator(MultipleLocator(tics[j][0]))
+                ax.xaxis.set_major_locator(MultipleLocator(tics[j][1]))
+                ax.tick_params(direction='in', length=7, width=2, labelsize=11, bottom=True, top=True, left=True,
+                               right=True)
+                ax.tick_params(which='minor', direction='in', length=4, width=2, bottom=True, top=True, left=True,
+                               right=True)
+                '''
+                ax.yaxis.set_minor_locator(MultipleLocator(.01))
+                ax.yaxis.set_major_locator(MultipleLocator(.02))
+                ''
+                
+                '''
+                if j == 2:
                     ax.legend()
+
+        plt.subplots_adjust(wspace=0.,hspace=0)
         plt.show()
 
 
@@ -1367,8 +1458,11 @@ def run_on_directory(args):
         filename_output = f[index]
         filename_output = filename_output.split('.asp')[0].replace('\\', '__').replace('/', '__')
 
-        fig = plt.figure(figsize=(16, 4))
+        fig = plt.figure(figsize=(9, 2.5))
         ax = fig.add_subplot(111)
+        for axis in ['top', 'bottom', 'left', 'right']:
+            ax.spines[axis].set_linewidth(3.)
+
         partials = range(0, len(s[index]), 8)
 
         ax.scatter(wanted_wavenumbers[partials], s[index][partials], c='k', s=100,
@@ -1384,9 +1478,22 @@ def run_on_directory(args):
                     label='Predicted: {:1.3f} (kg/kg) [{}]'.format(m_out[index, comp], comps[comp]))
 
         ax.legend()
-        ax.set_xlabel('Wavenumber (cm^-1)')
         ax.set_xlim(700, 1900)
-        ax.set_ylabel('Absorbance (abu)')
+        ax.set_ylim(bottom=0.)
+
+        if args['labels']:
+            ax.set_xlabel('Wavenumber (cm^-1)')
+            ax.set_ylabel('Absorbance (abu)')
+
+        ax.xaxis.set_minor_locator(MultipleLocator(200))
+        ax.xaxis.set_major_locator(MultipleLocator(400))
+        ax.yaxis.set_minor_locator(MultipleLocator(.1))
+        ax.yaxis.set_major_locator(MultipleLocator(.2))
+
+        ax.tick_params(direction='in', length=10, width=2, labelsize=11, bottom=True, top=True, left=True,
+                       right=True)
+        ax.tick_params(which='minor', direction='in', length=6, width=2, bottom=True, top=True, left=True,
+                       right=True)
 
         fig.savefig(os.path.join('.', args['output_dir'], filename_output + '_RECONSTRUCTION_COMPONENTS.png'))
         plt.close(fig)
@@ -1479,6 +1586,7 @@ class Command(BaseCommand):
         parser.add_argument('--num_concentrations', type=int, default=5)
         parser.add_argument('--num_samples', type=int, default=1536)
 
+
         parser.add_argument('--visuals', dest='visuals', action='store_true')
         parser.add_argument('--no-visuals', dest='visuals', action='store_false')
         parser.set_defaults(visuals=False)
@@ -1487,6 +1595,10 @@ class Command(BaseCommand):
         parser.add_argument('--constant_vm', dest='constant_vm', action='store_true')
         parser.add_argument('--no_constant_vm', dest='constant_vm', action='store_false')
         parser.set_defaults(constant_vm=False)
+
+        parser.add_argument('--labels', dest='labels', action='store_true')
+        parser.add_argument('--no_labels', dest='labels', action='store_false')
+        parser.set_defaults(labels=False)
 
     def handle(self, *args, **options):
 
