@@ -1543,7 +1543,7 @@ class Command(BaseCommand):
                                                'run_on_all_data',
                                                'paper_figures'
                                                ])
-        parser.add_argument('--logdir')
+        parser.add_argument('--logdir', default='LinearA_trained')
         parser.add_argument('--cross_validation_dir')
         parser.add_argument('--batch_size', type=int, default=64)
         parser.add_argument('--learning_rate', type=float, default=5e-3)
