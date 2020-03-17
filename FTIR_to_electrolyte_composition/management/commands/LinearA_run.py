@@ -15,6 +15,7 @@ import tensorflow as tf
 from django.core.management.base import BaseCommand
 import re
 from FTIR_to_electrolyte_composition.models import FTIRSpectrum, FTIRSample
+from scipy import interpolate
 
 wanted_wavenumbers = []
 
@@ -97,7 +98,7 @@ class LinearAModel(tf.keras.Model):
         self.trainable = trainable
         self.constant_vm = constant_vm
         # the log-magnitude of X
-        self.x = self.add_variable(
+        self.x = self.add_weight(
             name='x',
             shape=[1],
             dtype=tf.float32,
@@ -106,7 +107,7 @@ class LinearAModel(tf.keras.Model):
         )
 
         # This goes from spectrum to concentrations
-        self.X = self.add_variable(
+        self.X = self.add_weight(
             name='X',
             shape=[num_concentrations, num_samples],
             dtype=tf.float32,
@@ -116,7 +117,7 @@ class LinearAModel(tf.keras.Model):
 
         if constant_vm:
             # This goes from concentrations to spectrum
-            self.A = self.add_variable(
+            self.A = self.add_weight(
                 name='A',
                 shape=[ num_samples, num_concentrations],
                 dtype=tf.float32,
@@ -125,7 +126,7 @@ class LinearAModel(tf.keras.Model):
             )
         else:
             # This goes from concentrations to spectrum
-            self.A = self.add_variable(
+            self.A = self.add_weight(
                 name='A',
                 shape=[num_samples, num_concentrations, num_concentrations],
                 dtype=tf.float32,
@@ -1406,36 +1407,65 @@ def run_on_directory(args):
     num_concentrations = args['num_concentrations']
     num_samples = args['num_samples']
 
+    for spec in FTIRSpectrum.objects.filter(supervised=True):
+        wanted_wavenumbers = numpy.array(
+            [samp.wavenumber for samp in FTIRSample.objects.filter(spectrum=spec).order_by('index')])
+        break
+
     # First, import data
 
     if not os.path.exists(args['input_dir']):
         print('Please provide a valid value for --input_dir')
         return
+    if not os.path.exists(args['output_dir']):
+        os.mkdir(args['output_dir'])
 
-    all_filenames = []
+    all_filenames = {
+        'DAHNLAB':[],
+        'CSV':[],
+    }
     path_to_robot = args['input_dir']
     for root, dirs, filenames in os.walk(path_to_robot):
         for file in filenames:
+            # This is the standard option from the Dahnlab.
+            # files ending in .asp are intepreted as Dahnlab format.
             if file.endswith('.asp'):
-                all_filenames.append(os.path.join(root, file))
+                all_filenames['DAHNLAB'].append(os.path.join(root, file))
+            # This is the standard option for csv files (ordered pairs of (wavenumber, absorbance).
+            # files ending in .csv are intepreted as CSV format.
+            if file.endswith('.csv'):
+                all_filenames['CSV'].append(os.path.join(root, file))
 
     # for now, don't record in database, since it takes a long time.
     filenames_input = []
     spectra_input = []
 
-    for filename in all_filenames:
+    for filename in all_filenames['DAHNLAB']:
         with open(filename, 'r') as f:
             dat = ImportDirect(f, num_samples=num_samples)
 
         filenames_input.append(filename)
         spectra_input.append(numpy.array(dat[:num_samples]))
 
+    for filename in all_filenames['CSV']:
+        wave_abs_table = []
+        with open(filename, 'r') as f:
+            read = csv.reader(f)
+            for row in read:
+                if len(row) == 2:
+                    wave_abs_table.append([float(r) for r in row])
+
+            xy = numpy.array(wave_abs_table)
+            f = interpolate.interp1d(x=xy[:,0],y=xy[:,1])
+            dat = f(wanted_wavenumbers[:num_samples])
+
+
+        filenames_input.append(filename)
+        spectra_input.append(numpy.array(dat[:num_samples]))
+
+
     s = numpy.array(spectra_input, dtype=numpy.float32)
 
-    for spec in FTIRSpectrum.objects.filter(supervised=True):
-        wanted_wavenumbers = numpy.array(
-            [samp.wavenumber for samp in FTIRSample.objects.filter(spectrum=spec).order_by('index')])
-        break
 
     f = filenames_input
 
@@ -1458,23 +1488,23 @@ def run_on_directory(args):
         filename_output = f[index]
         filename_output = filename_output.split('.asp')[0].replace('\\', '__').replace('/', '__')
 
-        fig = plt.figure(figsize=(9, 2.5))
+        fig = plt.figure(figsize=(9, 6.5))
         ax = fig.add_subplot(111)
         for axis in ['top', 'bottom', 'left', 'right']:
             ax.spines[axis].set_linewidth(3.)
 
-        partials = range(0, len(s[index]), 8)
+        partials = range(0, len(s[index]), 1)
 
-        ax.scatter(wanted_wavenumbers[partials], s[index][partials], c='k', s=100,
+        ax.scatter(wanted_wavenumbers[partials], s[index][partials], c='k', s=7,
                    label='Measured')
-        ax.plot(wanted_wavenumbers[:len(s[index])], s_out[index, :], linewidth=6, linestyle='-', c='0.2',
+        ax.plot(wanted_wavenumbers[:len(s[index])], s_out[index, :], linewidth=1, linestyle='-', c='0.2',
                 label='Full Reconstruction')
         colors = ['r', 'b', 'g', 'm', 'c']
         comps = ['LiPF6', 'EC', 'EMC', 'DMC', 'DEC']
         for comp in range(5):
             ax.plot(wanted_wavenumbers[:len(s[index])],
                     s_comp_out[index, :, comp], c=colors[comp],
-                    linewidth=2, linestyle='--',
+                    linewidth=1, linestyle='--',
                     label='Predicted: {:1.3f} (kg/kg) [{}]'.format(m_out[index, comp], comps[comp]))
 
         ax.legend()
@@ -1485,8 +1515,8 @@ def run_on_directory(args):
             ax.set_xlabel('Wavenumber (cm^-1)')
             ax.set_ylabel('Absorbance (abu)')
 
-        ax.xaxis.set_minor_locator(MultipleLocator(200))
-        ax.xaxis.set_major_locator(MultipleLocator(400))
+        ax.xaxis.set_minor_locator(MultipleLocator(50))
+        ax.xaxis.set_major_locator(MultipleLocator(100))
         ax.yaxis.set_minor_locator(MultipleLocator(.1))
         ax.yaxis.set_major_locator(MultipleLocator(.2))
 
